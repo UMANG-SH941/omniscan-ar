@@ -1,0 +1,91 @@
+{
+  "project_name": "OmniScan AR",
+  "design_vision": {
+    "theme": "Dark Mode Only",
+    "archetype": "Archetype 7 (Electric & Neon) - Tactical HUD Variant",
+    "emotion": "Futuristic, immersive, tech-forward, precision instrument"
+  },
+  "typography": {
+    "fonts": {
+      "heading": "JetBrains Mono",
+      "body": "Outfit",
+      "mono": "JetBrains Mono"
+    },
+    "scale": {
+      "h1": "text-3xl sm:text-4xl tracking-tighter",
+      "h2": "text-2xl sm:text-3xl tracking-tight",
+      "h3": "text-xl sm:text-2xl",
+      "hud_label": "text-[10px] sm:text-xs tracking-[0.2em] uppercase",
+      "body": "text-base sm:text-sm",
+      "caption": "text-xs text-zinc-400"
+    },
+    "instructions": "Use JetBrains Mono for all numeric values, scanner readouts, and primary titles to give a terminal/HUD feel. Use Outfit for readable descriptions in the info cards."
+  },
+  "colors": {
+    "background": {
+      "app": "#050505",
+      "camera_overlay": "bg-black/40"
+    },
+    "surfaces": {
+      "glass_panel": "bg-black/60 backdrop-blur-2xl border border-white/10",
+      "glass_panel_active": "bg-[#00FF66]/10 backdrop-blur-2xl border border-[#00FF66]/30"
+    },
+    "brand": {
+      "primary": "#00FF66",
+      "secondary": "#00E5FF",
+      "warning": "#FF3B30",
+      "muted": "#A1A1AA"
+    },
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "#A1A1AA",
+      "accent": "#00FF66"
+    }
+  },
+  "layout_and_spacing": {
+    "spacing_scale": "Generous on container edges (p-6, p-8), tight on HUD elements (p-1, p-2)",
+    "container_rules": "This is a camera-first app. The main view must be h-screen w-screen with the camera background (using a background image if actual camera isn't accessible). UI elements must float above it.",
+    "bento_grid": "For the scan history, use Mode A: The Tetris Grid (asymmetrical bento layouts) to make it look like a high-tech database rather than a standard list."
+  },
+  "component_guidelines": {
+    "general": "Do not use generic SaaS cards. All surfaces must be 'Crystal Glass' or 'Terminal Retro' with sharp inner contrasts.",
+    "camera_viewfinder": "Full-screen absolute positioning. Overlay a subtle SVG scanning reticle in the center. Add corner brackets `[ ]` that pulse.",
+    "ar_labels": "Absolute positioned small pills floating over the background. Use JetBrains Mono, highly visible neon border (`border-[#00E5FF]`), and background blur.",
+    "info_bottom_sheet": "When an object is scanned, a bottom sheet (customized Shadcn Drawer or Dialog mapped to bottom) slides up. It must have crystal glassmorphism (`backdrop-blur-2xl bg-black/70`) with a 1px `border-white/10` top edge.",
+    "buttons": "Primary CTA should be the 'Scan' button - a large circular floating action button (FAB) at the bottom center. Needs an outer glowing ring (`shadow-[0_0_15px_rgba(0,255,102,0.5)]`).",
+    "icons": "Use Phosphor Icons (React) for a technical, duotone look. e.g. crosshairs, scan, history, corners."
+  },
+  "motion_and_interaction": {
+    "scanning_state": "When scanning, animate a horizontal green line moving top to bottom over the view. Use framer-motion.",
+    "hud_bootup": "On app load, stagger the entrance of the HUD corner brackets and labels (opacity 0 to 1).",
+    "data_reveal": "Text in the AR labels should ideally use a 'scramble' or typewriter effect on appear."
+  },
+  "media": {
+    "camera_background_mock": {
+      "url": "https://images.unsplash.com/photo-1687075196974-ea71a55cc9f8?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NjV8MHwxfHNlYXJjaHwxfHxtb2Rlcm4lMjBsaXZpbmclMjByb29tJTIwYmFja2dyb3VuZCUyMGJsdXJyZWR8ZW58MHx8fHwxNzc2NjIzMDE3fDA&ixlib=rb-4.1.0&q=85",
+      "description": "Blurred modern living room to simulate the camera feed background."
+    },
+    "scanned_plant": {
+      "url": "https://images.unsplash.com/photo-1493673272479-a20888bcee10?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxNzV8MHwxfHNlYXJjaHwxfHxyYXJlJTIwbW9uc3RlcmElMjBwbGFudCUyMGRhcmslMjBiYWNrZ3JvdW5kfGVufDB8fHx8MTc3NjYyMzAxN3ww&ixlib=rb-4.1.0&q=85",
+      "description": "Example object to place in the center of the camera view for mock scanning (Plant)."
+    },
+    "scanned_camera": {
+      "url": "https://images.unsplash.com/photo-1649342607992-4ff4f343818c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODl8MHwxfHNlYXJjaHwxfHx2aW50YWdlJTIwbGVpY2ElMjBjYW1lcmF8ZW58MHx8fHwxNzc2NjIzMDE3fDA&ixlib=rb-4.1.0&q=85",
+      "description": "Example object to place in the center of the camera view for mock scanning (Vintage Camera)."
+    }
+  },
+  "accessibility_and_testing": {
+    "contrast": "Ensure pure white text has text-shadow when overlaid directly on the camera feed.",
+    "testing": "All interactive elements must include `data-testid` (e.g., `data-testid=\"scan-trigger-button\"`, `data-testid=\"history-tab\"`)."
+  },
+  "instructions_to_main_agent": [
+    "Build this as a mobile-first web app (h-screen, max-w-md mx-auto for desktop, full width for mobile) simulating a native AR app.",
+    "Use standard React .js or .jsx files as per the environment. Do not use TypeScript.",
+    "Set the background of the main container to the `camera_background_mock` image with `bg-cover bg-center` to simulate the live camera feed.",
+    "Use Framer Motion for the scanning reticle and bottom sheet animations.",
+    "Use Phosphor icons or lucide-react for technical iconography.",
+    "Do not use generic Shadcn cards for the main UI. Build custom crystal glass panels using the utility classes provided in the colors section.",
+    "The UI should feel like a fighter jet HUD mixed with a sleek modern app. High contrast, neon accents, and mono fonts for data.",
+    "Ensure the scanning flow feels immersive, with AR labels positioned absolutely over the mock camera background."
+  ]
+}
