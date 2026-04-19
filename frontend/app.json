@@ -1,22 +1,27 @@
 {
   "expo": {
-    "name": "frontend",
+    "name": "OmniScan AR",
     "slug": "frontend",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "frontend",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSCameraUsageDescription": "Scan and identify objects around you",
+        "NSPhotoLibraryUsageDescription": "Import photos to identify objects"
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#000"
       },
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "permissions": ["android.permission.CAMERA", "android.permission.READ_EXTERNAL_STORAGE"]
     },
     "web": {
       "bundler": "metro",
@@ -25,6 +30,12 @@
     },
     "plugins": [
       "expo-router",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Scan and identify objects around you"
+        }
+      ],
       [
         "expo-splash-screen",
         {
