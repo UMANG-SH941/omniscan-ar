@@ -80,3 +80,21 @@ memory/test_credentials.md
 
 # Mobile development
 android-sdk/
+# Secrets ? never commit
+.env
+.env.*
+!.env.example
+
+# Expo / Metro / native build output
+.expo/
+.metro-cache/
+frontend/android/
+frontend/ios/
+*.apk
+*.aab
+
+# Local data store
+backend/data/
+
+# Emergent leftovers
+.em/

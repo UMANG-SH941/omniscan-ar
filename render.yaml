@@ -1,0 +1,16 @@
+# Render blueprint — deploys the OmniScan AR backend on the free tier.
+# In the Render dashboard: New + → Blueprint → select this repo.
+services:
+  - type: web
+    name: omniscan-backend
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false # set the value in the Render dashboard, never in git
+      - key: PYTHON_VERSION
+        value: 3.11.9

@@ -48,6 +48,18 @@ export const CATEGORIES = [
   { key: 'other', label: 'OTHER', icon: 'ellipsis-horizontal-outline' as const },
 ];
 
+export const SCAN_MODES = [
+  { key: 'normal', label: 'NORMAL', icon: 'scan-outline' as const },
+  { key: 'study', label: 'STUDY', icon: 'school-outline' as const },
+  { key: 'environmental', label: 'ECO', icon: 'leaf-outline' as const },
+  { key: 'shopping', label: 'SHOP', icon: 'pricetag-outline' as const },
+  { key: 'nature', label: 'NATURE', icon: 'flower-outline' as const },
+  { key: 'history', label: 'HISTORY', icon: 'hourglass-outline' as const },
+  { key: 'future', label: 'FUTURE', icon: 'planet-outline' as const },
+];
+
+export const FUTURE_STAGES = [0, 10, 25, 50, 100, 250, 500];
+
 export function categoryLabel(c: string) {
   const match = CATEGORIES.find(x => x.key === c);
   return match ? match.label : c.toUpperCase();

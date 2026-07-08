@@ -1,201 +1,131 @@
-from fastapi import FastAPI, APIRouter, HTTPException
-from dotenv import load_dotenv
-from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
-import os
-import json
-import re
+"""OmniScan AR — AI Spatial Intelligence Platform API.
+
+Thin route layer; all intelligence lives in independently replaceable services
+(see backend/services/). Pipeline per the spec:
+
+frame → DetectionService (live AR boxes)
+photo → VisionLanguageService → KnowledgeService (deep scan)
+scan  → PromptGenerationService → ImageGenerationService (future simulation)
+"""
 import logging
-import uuid
-from pathlib import Path
-from pydantic import BaseModel, Field
-from typing import List, Optional
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from typing import List, Optional
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
-
+from dotenv import load_dotenv
+from fastapi import FastAPI, APIRouter, HTTPException
+from pathlib import Path
+from starlette.middleware.cors import CORSMiddleware
 
 ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+load_dotenv(ROOT_DIR / '.env')  # must run before services read env vars
 
-# MongoDB
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+from models import (  # noqa: E402
+    ChatRequest, DetectRequest, DetectResponse, FutureRequest, FutureResponse,
+    HealthResponse, Scan, ScanCreate,
+)
+from services.detection import DetectionService  # noqa: E402
+from services.image_generation import (  # noqa: E402
+    ImageGenError, ImageGenUnavailable, ImageGenerationService,
+)
+from services.knowledge import KnowledgeService  # noqa: E402
+from services.llm import LlmError, LlmUnavailable, get_llm, llm_status  # noqa: E402
+from services.prompt_generation import FUTURE_STAGES, PromptGenerationService  # noqa: E402
+from services.storage import ScanRepository, create_repository  # noqa: E402
+from services.vision_language import VisionLanguageService  # noqa: E402
 
-EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY', '')
-MODEL_PROVIDER = "gemini"
-MODEL_NAME = "gemini-3-flash-preview"
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+)
+logger = logging.getLogger(__name__)
 
-app = FastAPI()
+repo: Optional[ScanRepository] = None
+image_gen = ImageGenerationService()
+prompt_gen = PromptGenerationService()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global repo
+    repo = await create_repository()
+    yield
+    close = getattr(repo, "close", None)
+    if close:
+        close()
+
+
+app = FastAPI(title="OmniScan AR", lifespan=lifespan)
 api_router = APIRouter(prefix="/api")
 
 
-# ============ Models ============
-class ScanCreate(BaseModel):
-    image_base64: str  # pure base64 (no data: prefix)
+def _strip_data_prefix(b64: str) -> str:
+    return b64.split(",", 1)[-1] if b64.startswith("data:") else b64
 
 
-class ChatTurn(BaseModel):
-    role: str  # "user" | "assistant"
-    text: str
-    timestamp: str
+def _services():
+    """Build LLM-backed services lazily so a missing key fails per-request."""
+    try:
+        llm = get_llm()
+    except LlmUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    return (DetectionService(llm), VisionLanguageService(llm),
+            KnowledgeService(llm))
 
 
-class Scan(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    category: str  # plant | product | landmark | object | animal | food | other
-    confidence: str  # low | medium | high
-    short_label: str  # tiny AR tag, 2-3 words
-    description: str
-    usage: str
-    insights: List[str] = []
-    tags: List[str] = []
-    image_base64: str = ""  # stored for history thumbnail
-    favorite: bool = False
-    chat_history: List[ChatTurn] = []
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-
-class ChatRequest(BaseModel):
-    message: str
-
-
-# ============ Helpers ============
-SCAN_SYSTEM_PROMPT = """You are OmniScan AR, an advanced object identification engine powering a futuristic AR scanning app.
-
-When given an image, identify the primary object in focus and return ONLY a strict JSON object with these exact keys:
-{
-  "name": "<specific, precise name of the object>",
-  "category": "<one of: plant, product, landmark, object, animal, food, other>",
-  "confidence": "<one of: low, medium, high>",
-  "short_label": "<2-3 word AR tag>",
-  "description": "<2-3 sentence engaging description>",
-  "usage": "<2-3 sentences on how it is used, its purpose, or relevance>",
-  "insights": ["<interesting fact 1>", "<interesting fact 2>", "<interesting fact 3>"],
-  "tags": ["<tag1>", "<tag2>", "<tag3>"]
-}
-
-Rules:
-- Output ONLY valid JSON, no markdown fences, no commentary.
-- If unsure, still provide the best guess with confidence "low".
-- If no recognizable object, return name "Unknown Object", category "other", confidence "low".
-- Always include 3 insights and 3 tags.
-"""
-
-CHAT_SYSTEM_PROMPT_TEMPLATE = """You are OmniScan AR's knowledge companion. The user has scanned: {name} (category: {category}).
-Context about the object:
-- Description: {description}
-- Usage: {usage}
-- Insights: {insights}
-
-Answer the user's follow-up questions about this specific object concisely (2-4 sentences), factually, and engagingly. Stay focused on the scanned object and its domain."""
-
-
-def _extract_json(text: str) -> dict:
-    text = text.strip()
-    # strip markdown fences
-    text = re.sub(r'^```(?:json)?\s*', '', text)
-    text = re.sub(r'\s*```$', '', text)
-    # find first {...}
-    match = re.search(r'\{[\s\S]*\}', text)
-    if not match:
-        raise ValueError("No JSON object found in response")
-    return json.loads(match.group(0))
-
-
-def _doc_to_scan(doc: dict) -> dict:
-    doc = {k: v for k, v in doc.items() if k != '_id'}
-    return doc
-
-
-# ============ Routes ============
 @api_router.get("/")
 async def root():
     return {"message": "OmniScan AR API", "status": "online"}
 
 
+@api_router.get("/health", response_model=HealthResponse)
+async def health():
+    return HealthResponse(
+        status="online",
+        llm=llm_status(),
+        image_generation=image_gen.status(),
+        storage=repo.name if repo else "initializing",
+    )
+
+
+@api_router.post("/detect", response_model=DetectResponse)
+async def detect_objects(payload: DetectRequest):
+    detection, _, _ = _services()
+    b64 = _strip_data_prefix(payload.image_base64)
+    try:
+        objects = await detection.detect(b64)
+    except LlmError as e:
+        raise HTTPException(status_code=502, detail=f"Detection failed: {e}")
+    return DetectResponse(objects=objects, count=len(objects))
+
+
 @api_router.post("/scan", response_model=Scan)
 async def scan_object(payload: ScanCreate):
-    if not EMERGENT_LLM_KEY:
-        raise HTTPException(status_code=500, detail="LLM key not configured")
-
-    # strip data: prefix if present
-    b64 = payload.image_base64
-    if b64.startswith("data:"):
-        b64 = b64.split(",", 1)[-1]
-
-    session_id = f"scan-{uuid.uuid4()}"
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=session_id,
-        system_message=SCAN_SYSTEM_PROMPT,
-    ).with_model(MODEL_PROVIDER, MODEL_NAME)
-
-    user_msg = UserMessage(
-        text="Identify the primary object in this image. Respond with the JSON schema exactly.",
-        file_contents=[ImageContent(image_base64=b64)],
-    )
+    _, vision, knowledge = _services()
+    b64 = _strip_data_prefix(payload.image_base64)
+    mode = (payload.mode or "normal").lower()
 
     try:
-        response = await chat.send_message(user_msg)
-    except Exception as e:
-        logging.exception("LLM scan failed")
-        raise HTTPException(status_code=502, detail=f"Scan failed: {str(e)}")
+        analysis = await vision.analyze(b64, mode=mode)
+        enrichment = await knowledge.enrich(analysis, mode=mode)
+    except LlmError as e:
+        logger.exception("Scan pipeline failed")
+        raise HTTPException(status_code=502, detail=f"Scan failed: {e}")
 
-    try:
-        data = _extract_json(response)
-    except Exception:
-        logging.warning(f"Malformed LLM response: {response[:500]}")
-        data = {
-            "name": "Unknown Object",
-            "category": "other",
-            "confidence": "low",
-            "short_label": "Unknown",
-            "description": response[:300] if response else "Could not identify.",
-            "usage": "Please try another angle or better lighting.",
-            "insights": ["Scan returned an unstructured result."],
-            "tags": [],
-        }
-
-    scan = Scan(
-        name=str(data.get("name", "Unknown Object"))[:120],
-        category=str(data.get("category", "other")).lower(),
-        confidence=str(data.get("confidence", "low")).lower(),
-        short_label=str(data.get("short_label", data.get("name", "Unknown")))[:40],
-        description=str(data.get("description", "")),
-        usage=str(data.get("usage", "")),
-        insights=[str(x) for x in (data.get("insights") or [])][:5],
-        tags=[str(x) for x in (data.get("tags") or [])][:8],
-        image_base64=b64,
-    )
-
-    await db.scans.insert_one(scan.model_dump())
+    scan = Scan(**analysis, **enrichment, mode=mode, image_base64=b64)
+    await repo.insert(scan.model_dump())
     return scan
 
 
 @api_router.get("/scans", response_model=List[Scan])
 async def list_scans(category: Optional[str] = None, favorites_only: bool = False):
-    query: dict = {}
-    if category and category != "all":
-        query["category"] = category
-    if favorites_only:
-        query["favorite"] = True
-
-    # light payload: exclude full image to keep list fast
-    cursor = db.scans.find(query, {"_id": 0, "image_base64": 0, "chat_history": 0}).sort("created_at", -1).limit(200)
-    docs = await cursor.to_list(200)
-    # Re-fill image_base64 as empty string since model requires it
-    for d in docs:
-        d.setdefault("image_base64", "")
-        d.setdefault("chat_history", [])
+    docs = await repo.list(category=category, favorites_only=favorites_only)
     return [Scan(**d) for d in docs]
 
 
 @api_router.get("/scans/{scan_id}", response_model=Scan)
 async def get_scan(scan_id: str):
-    doc = await db.scans.find_one({"id": scan_id}, {"_id": 0})
+    doc = await repo.get(scan_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Scan not found")
     return Scan(**doc)
@@ -203,61 +133,72 @@ async def get_scan(scan_id: str):
 
 @api_router.post("/scans/{scan_id}/favorite", response_model=Scan)
 async def toggle_favorite(scan_id: str):
-    doc = await db.scans.find_one({"id": scan_id}, {"_id": 0})
+    doc = await repo.get(scan_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Scan not found")
-    new_fav = not bool(doc.get("favorite", False))
-    await db.scans.update_one({"id": scan_id}, {"$set": {"favorite": new_fav}})
-    doc["favorite"] = new_fav
+    doc["favorite"] = not bool(doc.get("favorite", False))
+    await repo.update(scan_id, {"favorite": doc["favorite"]})
     return Scan(**doc)
 
 
 @api_router.delete("/scans/{scan_id}")
 async def delete_scan(scan_id: str):
-    result = await db.scans.delete_one({"id": scan_id})
-    if result.deleted_count == 0:
+    if not await repo.delete(scan_id):
         raise HTTPException(status_code=404, detail="Scan not found")
     return {"ok": True}
 
 
 @api_router.post("/scans/{scan_id}/chat", response_model=Scan)
 async def chat_about_scan(scan_id: str, req: ChatRequest):
-    if not EMERGENT_LLM_KEY:
-        raise HTTPException(status_code=500, detail="LLM key not configured")
-
-    doc = await db.scans.find_one({"id": scan_id}, {"_id": 0})
+    _, _, knowledge = _services()
+    doc = await repo.get(scan_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Scan not found")
 
     history = doc.get("chat_history", [])
-    system_msg = CHAT_SYSTEM_PROMPT_TEMPLATE.format(
-        name=doc.get("name", "Unknown"),
-        category=doc.get("category", "other"),
-        description=doc.get("description", ""),
-        usage=doc.get("usage", ""),
-        insights=", ".join(doc.get("insights", []) or []),
-    )
-
-    # Use the scan_id as the session_id so Emergent integration keeps context across turns.
-    chat = LlmChat(
-        api_key=EMERGENT_LLM_KEY,
-        session_id=f"scan-chat-{scan_id}",
-        system_message=system_msg,
-    ).with_model(MODEL_PROVIDER, MODEL_NAME)
-
     try:
-        response = await chat.send_message(UserMessage(text=req.message))
-    except Exception as e:
-        logging.exception("Chat failed")
-        raise HTTPException(status_code=502, detail=f"Chat failed: {str(e)}")
+        answer = await knowledge.answer(doc, history, req.message)
+    except LlmError as e:
+        raise HTTPException(status_code=502, detail=f"Chat failed: {e}")
 
     now = datetime.now(timezone.utc).isoformat()
     history.append({"role": "user", "text": req.message, "timestamp": now})
-    history.append({"role": "assistant", "text": response, "timestamp": now})
-
-    await db.scans.update_one({"id": scan_id}, {"$set": {"chat_history": history}})
+    history.append({"role": "assistant", "text": answer, "timestamp": now})
+    await repo.update(scan_id, {"chat_history": history})
     doc["chat_history"] = history
     return Scan(**doc)
+
+
+@api_router.post("/scans/{scan_id}/future", response_model=FutureResponse)
+async def generate_future(scan_id: str, req: FutureRequest):
+    if req.years not in FUTURE_STAGES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"years must be one of {FUTURE_STAGES}")
+
+    doc = await repo.get(scan_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Scan not found")
+
+    prompt = prompt_gen.build(doc, req.years)
+    cached = (doc.get("future_images") or {}).get(str(req.years))
+    if cached:
+        return FutureResponse(years=req.years, image_base64=cached,
+                              prompt=prompt, provider="cache", cached=True)
+
+    try:
+        image_b64, provider = await image_gen.generate(
+            prompt, reference_b64=doc.get("image_base64") or None)
+    except ImageGenUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except ImageGenError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    futures = doc.get("future_images") or {}
+    futures[str(req.years)] = image_b64
+    await repo.update(scan_id, {"future_images": futures})
+    return FutureResponse(years=req.years, image_base64=image_b64,
+                          prompt=prompt, provider=provider)
 
 
 app.include_router(api_router)
@@ -269,14 +210,3 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-)
-logger = logging.getLogger(__name__)
-
-
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()

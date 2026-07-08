@@ -2,6 +2,7 @@ import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { View, StyleSheet, Platform } from 'react-native';
 import { BlurView } from 'expo-blur';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { theme } from '../../src/theme';
 
 function TabBarBg() {
@@ -37,6 +38,9 @@ function FavTabIcon({ color }: { color: string }) {
 }
 
 export default function TabsLayout() {
+  const insets = useSafeAreaInsets();
+  // Keep the bar clear of the Android nav bar / iOS home indicator.
+  const bottomPad = Math.max(insets.bottom, 10);
   return (
     <Tabs
       screenOptions={{
@@ -46,9 +50,9 @@ export default function TabsLayout() {
           bottom: 0,
           left: 0,
           right: 0,
-          height: 78,
-          paddingBottom: 18,
-          paddingTop: 10,
+          height: 58 + bottomPad,
+          paddingBottom: bottomPad,
+          paddingTop: 8,
           backgroundColor: Platform.OS === 'ios' ? 'transparent' : 'rgba(0,0,0,0.92)',
           borderTopWidth: 1,
           borderTopColor: theme.colors.border,

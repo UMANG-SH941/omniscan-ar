@@ -10,6 +10,8 @@ import {
   Alert,
   Image,
   ScrollView,
+  Modal,
+  TextInput,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -23,17 +25,25 @@ import Animated, {
   withSequence,
   Easing,
   cancelAnimation,
+  FadeIn,
+  FadeOut,
 } from 'react-native-reanimated';
 import { useRouter, useFocusEffect } from 'expo-router';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { theme } from '../../src/theme';
-import { scanImage } from '../../src/api';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { theme, SCAN_MODES } from '../../src/theme';
+import { scanImage, detectObjects } from '../../src/api';
+import { Track, updateTracks, mapBoxToScreen } from '../../src/tracking';
+import { getBackendUrl, setBackendUrl, defaultBackendUrl, pingBackend } from '../../src/config';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
-const RETICLE = 300;
+// Scale the reticle to the screen so it never collides with the HUD controls.
+const RETICLE = Math.min(250, Math.round(SCREEN_W * 0.62));
+const LIVE_FRAME_WIDTH = 512; // downscaled frame sent to the detector
+const LIVE_LOOP_PAUSE_MS = 350; // breather between detection cycles
 
 export default function ScannerScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const cameraRef = useRef<CameraView | null>(null);
   const webInputRef = useRef<HTMLInputElement | null>(null);
   const [permission, requestPermission] = useCameraPermissions();
@@ -42,14 +52,83 @@ export default function ScannerScreen() {
   const [statusText, setStatusText] = useState('READY');
   const [previewB64, setPreviewB64] = useState<string | null>(null);
   const [hudActive, setHudActive] = useState(false);
+  const [mode, setMode] = useState('normal');
+
+  // Server settings sheet
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [serverUrl, setServerUrl] = useState('');
+  const [serverStatus, setServerStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
+
+  // Live AR state
+  const [liveMode, setLiveMode] = useState(Platform.OS !== 'web');
+  const [tracks, setTracks] = useState<Track[]>([]);
+  const [frameDims, setFrameDims] = useState({ w: LIVE_FRAME_WIDTH, h: LIVE_FRAME_WIDTH });
+  const tracksRef = useRef<Track[]>([]);
+  const busyRef = useRef(false);
+  const liveRef = useRef(liveMode);
+  const focusedRef = useRef(false);
+  liveRef.current = liveMode;
+  busyRef.current = busy;
 
   // Animations
   const scanLineY = useSharedValue(0);
   const pulse = useSharedValue(0.5);
   const cornerOpacity = useSharedValue(1);
 
+  const captureLiveFrame = useCallback(async (): Promise<{
+    b64: string;
+    w: number;
+    h: number;
+  } | null> => {
+    if (!cameraRef.current) return null;
+    const photo = await cameraRef.current.takePictureAsync({
+      base64: false,
+      quality: 0.3,
+      skipProcessing: true,
+    });
+    if (!photo?.uri) return null;
+    const small = await ImageManipulator.manipulateAsync(
+      photo.uri,
+      [{ resize: { width: LIVE_FRAME_WIDTH } }],
+      { compress: 0.5, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+    );
+    if (!small.base64) return null;
+    return { b64: small.base64, w: small.width, h: small.height };
+  }, []);
+
+  // Self-scheduling live detection loop.
+  const runLiveLoop = useCallback(async () => {
+    while (focusedRef.current && liveRef.current && Platform.OS !== 'web') {
+      if (busyRef.current) {
+        await new Promise((r) => setTimeout(r, 400));
+        continue;
+      }
+      try {
+        const frame = await captureLiveFrame();
+        if (!frame || !focusedRef.current || !liveRef.current || busyRef.current) {
+          await new Promise((r) => setTimeout(r, LIVE_LOOP_PAUSE_MS));
+          continue;
+        }
+        const { objects } = await detectObjects(frame.b64);
+        if (!focusedRef.current || !liveRef.current || busyRef.current) break;
+        const updated = updateTracks(tracksRef.current, objects);
+        tracksRef.current = updated;
+        setTracks(updated);
+        setFrameDims({ w: frame.w, h: frame.h });
+        setStatusText(
+          updated.length > 0 ? `LIVE · ${updated.length} TRACKED` : 'LIVE · SEARCHING'
+        );
+      } catch {
+        // Backend hiccup or capture race: keep the loop alive.
+        if (focusedRef.current && liveRef.current) setStatusText('LIVE · RECONNECTING');
+      }
+      await new Promise((r) => setTimeout(r, LIVE_LOOP_PAUSE_MS));
+    }
+  }, [captureLiveFrame]);
+
   useFocusEffect(
     useCallback(() => {
+      focusedRef.current = true;
       cornerOpacity.value = withTiming(1, { duration: 600 });
       pulse.value = withRepeat(
         withSequence(
@@ -59,12 +138,50 @@ export default function ScannerScreen() {
         -1,
         false
       );
+      if (liveRef.current && permission?.granted) {
+        // Give the camera a moment to warm up before the first capture.
+        const t = setTimeout(() => runLiveLoop(), 700);
+        return () => {
+          clearTimeout(t);
+          focusedRef.current = false;
+          cancelAnimation(pulse);
+          cancelAnimation(scanLineY);
+        };
+      }
       return () => {
+        focusedRef.current = false;
         cancelAnimation(pulse);
         cancelAnimation(scanLineY);
       };
-    }, [cornerOpacity, pulse, scanLineY])
+    }, [cornerOpacity, pulse, scanLineY, runLiveLoop, permission?.granted])
   );
+
+  const openSettings = async () => {
+    setServerUrl(await getBackendUrl());
+    setServerStatus('idle');
+    setSettingsOpen(true);
+  };
+
+  const testServer = async () => {
+    setServerStatus('testing');
+    const ok = await pingBackend(serverUrl);
+    setServerStatus(ok ? 'ok' : 'fail');
+  };
+
+  const saveServer = async () => {
+    await setBackendUrl(serverUrl);
+    setSettingsOpen(false);
+  };
+
+  const toggleLive = () => {
+    setTracks([]);
+    tracksRef.current = [];
+    const next = !liveMode;
+    setLiveMode(next);
+    liveRef.current = next;
+    setStatusText(next ? 'LIVE · SEARCHING' : 'READY');
+    if (next && focusedRef.current) runLiveLoop();
+  };
 
   useEffect(() => {
     if (busy) {
@@ -84,26 +201,17 @@ export default function ScannerScreen() {
     transform: [{ translateY: scanLineY.value }],
   }));
 
-  const pulseStyle = useAnimatedStyle(() => ({
-    opacity: 0.5 + pulse.value * 0.5,
-  }));
-
-  const cornersStyle = useAnimatedStyle(() => ({
-    opacity: cornerOpacity.value,
-  }));
-
   const onScan = async () => {
     if (busy) return;
     try {
       setBusy(true);
+      busyRef.current = true;
       setStatusText('CAPTURING...');
       if (Platform.OS !== 'web') {
         Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       }
 
-      let b64 = '';
       if (Platform.OS === 'web') {
-        // trigger file input
         setBusy(false);
         setStatusText('SELECT IMAGE');
         webInputRef.current?.click();
@@ -126,28 +234,26 @@ export default function ScannerScreen() {
         setStatusText('CAPTURE FAILED');
         return;
       }
-      // compress to 800px wide jpeg base64
       const manipulated = await ImageManipulator.manipulateAsync(
         photo.uri,
         [{ resize: { width: 800 } }],
         { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG, base64: true }
       );
-      b64 = manipulated.base64 || '';
+      const b64 = manipulated.base64 || '';
       setPreviewB64(b64);
 
       setStatusText('ANALYZING...');
       setHudActive(true);
-      const scan = await scanImage(b64);
+      const scan = await scanImage(b64, mode);
 
-      if (Platform.OS !== 'web') {
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      }
+      // web already returned above; we're on a native platform here
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.push(`/scan/${scan.id}`);
       setTimeout(() => {
         setBusy(false);
         setPreviewB64(null);
         setHudActive(false);
-        setStatusText('READY');
+        setStatusText(liveRef.current ? 'LIVE · SEARCHING' : 'READY');
       }, 500);
     } catch (err: any) {
       console.error(err);
@@ -165,7 +271,6 @@ export default function ScannerScreen() {
       setStatusText('ANALYZING...');
       setHudActive(true);
 
-      // Resize + compress via canvas to keep payload small
       const compress = (src: File): Promise<string> =>
         new Promise((resolve, reject) => {
           const reader = new FileReader();
@@ -194,7 +299,7 @@ export default function ScannerScreen() {
 
       const base64 = await compress(file);
       setPreviewB64(base64);
-      const scan = await scanImage(base64);
+      const scan = await scanImage(base64, mode);
       router.push(`/scan/${scan.id}`);
       setTimeout(() => {
         setBusy(false);
@@ -241,6 +346,8 @@ export default function ScannerScreen() {
     );
   }
 
+  const showLiveOverlays = liveMode && !busy && Platform.OS !== 'web';
+
   return (
     <View style={styles.root} testID="scanner-screen">
       {/* CAMERA / PREVIEW LAYER */}
@@ -262,7 +369,6 @@ export default function ScannerScreen() {
             />
           )}
           <View style={[StyleSheet.absoluteFillObject, { backgroundColor: 'rgba(0,0,0,0.25)' }]} />
-          {/* hidden file input */}
           {Platform.OS === 'web' ? (
             // eslint-disable-next-line react/no-unknown-property
             <input
@@ -285,68 +391,144 @@ export default function ScannerScreen() {
           ref={(r) => { cameraRef.current = r; }}
           style={StyleSheet.absoluteFillObject}
           facing={facing}
+          animateShutter={false}
         />
       )}
 
-      {/* DARK VIGNETTE */}
-      <View pointerEvents="none" style={styles.vignette} />
+      {/* LIVE AR OVERLAYS */}
+      {showLiveOverlays &&
+        tracks.map((t) => {
+          const r = mapBoxToScreen(t, frameDims.w, frameDims.h, SCREEN_W, SCREEN_H);
+          if (r.w < 8 || r.h < 8) return null;
+          return (
+            <Animated.View
+              key={t.id}
+              entering={FadeIn.duration(250)}
+              exiting={FadeOut.duration(200)}
+              pointerEvents="none"
+              style={[styles.arBox, { left: r.x, top: r.y, width: r.w, height: r.h }]}
+              testID={`ar-track-${t.id}`}>
+              {/* corner ticks */}
+              <View style={[styles.arCorner, styles.arTL]} />
+              <View style={[styles.arCorner, styles.arTR]} />
+              <View style={[styles.arCorner, styles.arBL]} />
+              <View style={[styles.arCorner, styles.arBR]} />
+              {/* connector + holographic label (never covers the object) */}
+              <View style={styles.arConnector} />
+              <View style={styles.arLabel}>
+                <View style={styles.arLabelDot} />
+                <Text style={styles.arLabelText} numberOfLines={1}>
+                  {t.label.toUpperCase()}
+                </Text>
+                <Text style={styles.arLabelConf}>{Math.round(t.confidence * 100)}%</Text>
+              </View>
+              {/* confidence bar */}
+              <View style={styles.arConfTrack}>
+                <View
+                  style={[styles.arConfFill, { width: `${Math.round(t.confidence * 100)}%` }]}
+                />
+              </View>
+            </Animated.View>
+          );
+        })}
 
       {/* TOP HUD */}
       <SafeAreaView edges={['top']} pointerEvents="box-none" style={styles.topHudWrap}>
         <View style={styles.topHud} testID="top-hud">
           <View style={styles.topHudLeft}>
-            <View style={[styles.dot, { backgroundColor: theme.colors.primary }]} />
-            <Text style={styles.hudLabel}>OMNISCAN · v1</Text>
+            <View
+              style={[
+                styles.dot,
+                { backgroundColor: liveMode ? theme.colors.secondary : theme.colors.primary },
+              ]}
+            />
+            <Text style={styles.hudLabel}>OMNISCAN · v2</Text>
           </View>
-          <View style={styles.topHudRight}>
-            <Text style={styles.hudStatus}>{statusText}</Text>
+          <View style={styles.topHudRightRow}>
+            <Text style={styles.hudStatus} numberOfLines={1} ellipsizeMode="tail">
+              {statusText}
+            </Text>
+            <TouchableOpacity onPress={openSettings} testID="open-settings-btn" hitSlop={10}>
+              <Ionicons name="settings-outline" size={16} color={theme.colors.textDim} />
+            </TouchableOpacity>
           </View>
         </View>
         <View style={styles.topMetaRow}>
-          <Text style={styles.metaMono}>LAT 0.000 · LON 0.000</Text>
-          <Text style={styles.metaMono}>MODE · AI-VISION</Text>
+          <Text style={styles.metaMono}>MODE · {mode.toUpperCase()}</Text>
+          {Platform.OS !== 'web' && (
+            <TouchableOpacity onPress={toggleLive} style={styles.livePill} testID="live-toggle">
+              <View
+                style={[
+                  styles.dot,
+                  {
+                    marginRight: 4,
+                    backgroundColor: liveMode ? theme.colors.secondary : theme.colors.textFaint,
+                  },
+                ]}
+              />
+              <Text
+                style={[
+                  styles.metaMono,
+                  liveMode && { color: theme.colors.secondary },
+                ]}>
+                LIVE AR {liveMode ? 'ON' : 'OFF'}
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
       </SafeAreaView>
 
-      {/* CENTER RETICLE */}
-      <View pointerEvents="none" style={styles.reticleWrap}>
-        <View style={styles.reticle} testID="scan-reticle">
-          {/* corners */}
-          <View style={[styles.corner, styles.cTL]} />
-          <View style={[styles.corner, styles.cTR]} />
-          <View style={[styles.corner, styles.cBL]} />
-          <View style={[styles.corner, styles.cBR]} />
-
-          {/* crosshair */}
-          <View style={styles.crossH} />
-          <View style={styles.crossV} />
-
-          {/* static subtle border */}
-          <View style={styles.reticleBorder} />
-
-          {/* scanning line */}
-          {busy && (
-            <Animated.View style={[styles.scanLine, scanLineStyle]} testID="scan-line" />
-          )}
+      {/* CENTER RETICLE (hidden while live overlays are tracking) */}
+      {(!showLiveOverlays || tracks.length === 0) && (
+        <View pointerEvents="none" style={styles.reticleWrap}>
+          <View style={styles.reticle} testID="scan-reticle">
+            <View style={[styles.corner, styles.cTL]} />
+            <View style={[styles.corner, styles.cTR]} />
+            <View style={[styles.corner, styles.cBL]} />
+            <View style={[styles.corner, styles.cBR]} />
+            <View style={styles.crossH} />
+            <View style={styles.crossV} />
+            <View style={styles.reticleBorder} />
+            {busy && (
+              <Animated.View style={[styles.scanLine, scanLineStyle]} testID="scan-line" />
+            )}
+          </View>
+          <Text style={styles.reticleHint} testID="reticle-hint">
+            {busy
+              ? 'IDENTIFYING TARGET'
+              : liveMode && Platform.OS !== 'web'
+                ? 'SCANNING ENVIRONMENT...'
+                : 'ALIGN OBJECT WITHIN FRAME'}
+          </Text>
         </View>
+      )}
 
-        <Text style={styles.reticleHint} testID="reticle-hint">
-          {busy ? 'IDENTIFYING TARGET' : 'ALIGN OBJECT WITHIN FRAME'}
-        </Text>
-      </View>
-
-      {/* BOTTOM CONTROLS */}
-      <SafeAreaView edges={['bottom']} pointerEvents="box-none" style={styles.bottomWrap}>
-        {/* confidence / tips pill row */}
+      {/* BOTTOM CONTROLS — anchored above the tab bar, nav-bar aware */}
+      <View
+        pointerEvents="box-none"
+        style={[styles.bottomWrap, { bottom: 58 + Math.max(insets.bottom, 10) + 8 }]}>
+        {/* visualization mode selector */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.tipsRow}>
-          {['PLANTS', 'PRODUCTS', 'LANDMARKS', 'OBJECTS', 'ANIMALS', 'FOOD'].map((t) => (
-            <View key={t} style={styles.tipPill} testID={`supported-${t.toLowerCase()}`}>
-              <Text style={styles.tipText}>{t}</Text>
-            </View>
-          ))}
+          {SCAN_MODES.map((m) => {
+            const active = mode === m.key;
+            return (
+              <TouchableOpacity
+                key={m.key}
+                onPress={() => setMode(m.key)}
+                style={[styles.tipPill, active && styles.tipPillActive]}
+                testID={`mode-${m.key}`}>
+                <Ionicons
+                  name={m.icon}
+                  size={12}
+                  color={active ? theme.colors.bg : theme.colors.textDim}
+                />
+                <Text style={[styles.tipText, active && styles.tipTextActive]}>{m.label}</Text>
+              </TouchableOpacity>
+            );
+          })}
         </ScrollView>
 
         <View style={styles.controlRow}>
@@ -372,7 +554,7 @@ export default function ScannerScreen() {
                 )}
               </View>
             </View>
-            <Text style={styles.fabLabel}>{busy ? 'SCANNING' : 'TAP TO SCAN'}</Text>
+            <Text style={styles.fabLabel}>{busy ? 'SCANNING' : 'DEEP SCAN'}</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
@@ -390,25 +572,89 @@ export default function ScannerScreen() {
           <View style={styles.analyzingBanner} testID="analyzing-banner">
             <View style={[styles.dot, { backgroundColor: theme.colors.secondary }]} />
             <Text style={styles.analyzingText}>
-              NEURAL NET ACTIVE · GEMINI VISION PROCESSING
+              NEURAL NET ACTIVE · VISION + KNOWLEDGE PIPELINE
             </Text>
           </View>
         )}
-      </SafeAreaView>
+      </View>
+
+      {/* SERVER SETTINGS SHEET */}
+      <Modal
+        visible={settingsOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSettingsOpen(false)}>
+        <View style={styles.settingsBackdrop}>
+          <View style={styles.settingsCard} testID="settings-sheet">
+            <View style={styles.settingsHeader}>
+              <Ionicons name="server-outline" size={16} color={theme.colors.primary} />
+              <Text style={styles.settingsTitle}>OMNISCAN SERVER</Text>
+            </View>
+            <Text style={styles.settingsHint}>
+              URL of the OmniScan backend this app connects to.
+            </Text>
+            <TextInput
+              style={styles.settingsInput}
+              value={serverUrl}
+              onChangeText={(t) => {
+                setServerUrl(t);
+                setServerStatus('idle');
+              }}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              placeholder={defaultBackendUrl() || 'http://192.168.1.5:8001'}
+              placeholderTextColor={theme.colors.textFaint}
+              testID="server-url-input"
+            />
+            {serverStatus !== 'idle' && (
+              <Text
+                style={[
+                  styles.settingsStatus,
+                  serverStatus === 'ok' && { color: theme.colors.primary },
+                  serverStatus === 'fail' && { color: theme.colors.warning },
+                ]}
+                testID="server-status">
+                {serverStatus === 'testing'
+                  ? 'TESTING CONNECTION...'
+                  : serverStatus === 'ok'
+                    ? 'CONNECTED · SERVER ONLINE'
+                    : 'UNREACHABLE · CHECK URL / WIFI / FIREWALL'}
+              </Text>
+            )}
+            <View style={styles.settingsBtnRow}>
+              <TouchableOpacity
+                style={styles.settingsBtnGhost}
+                onPress={testServer}
+                disabled={serverStatus === 'testing'}
+                testID="test-server-btn">
+                <Text style={styles.settingsBtnGhostText}>TEST</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.settingsBtnGhost}
+                onPress={() => setSettingsOpen(false)}
+                testID="cancel-settings-btn">
+                <Text style={styles.settingsBtnGhostText}>CANCEL</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.settingsBtnSave}
+                onPress={saveServer}
+                testID="save-settings-btn">
+                <Text style={styles.settingsBtnSaveText}>SAVE</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
+const mono = Platform.OS === 'ios' ? 'Courier' : 'monospace';
+
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: theme.colors.bg },
   webBg: { ...StyleSheet.absoluteFillObject, backgroundColor: '#0a0a0a' },
-  vignette: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'transparent',
-    shadowColor: '#000',
-    shadowOpacity: 0.8,
-    shadowRadius: 120,
-  },
   permWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.colors.bg, padding: 24 },
   permCard: {
     backgroundColor: theme.colors.surfaceAlt,
@@ -422,7 +668,7 @@ const styles = StyleSheet.create({
   permIconWrap: { marginBottom: 12 },
   permTitle: {
     color: theme.colors.primary,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontFamily: mono,
     fontSize: 16,
     letterSpacing: 3,
     marginBottom: 8,
@@ -437,10 +683,81 @@ const styles = StyleSheet.create({
   },
   primaryBtnText: {
     color: theme.colors.bg,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontFamily: mono,
     fontWeight: '700',
     letterSpacing: 2,
     fontSize: 13,
+  },
+
+  // Live AR overlay
+  arBox: {
+    position: 'absolute',
+    borderWidth: 1,
+    borderColor: 'rgba(0,229,255,0.55)',
+    borderRadius: 6,
+  },
+  arCorner: { position: 'absolute', width: 14, height: 14, borderColor: theme.colors.secondary },
+  arTL: { top: -1, left: -1, borderTopWidth: 2, borderLeftWidth: 2 },
+  arTR: { top: -1, right: -1, borderTopWidth: 2, borderRightWidth: 2 },
+  arBL: { bottom: -1, left: -1, borderBottomWidth: 2, borderLeftWidth: 2 },
+  arBR: { bottom: -1, right: -1, borderBottomWidth: 2, borderRightWidth: 2 },
+  arConnector: {
+    position: 'absolute',
+    top: -14,
+    left: 14,
+    width: 1,
+    height: 14,
+    backgroundColor: theme.colors.secondary,
+    opacity: 0.8,
+  },
+  arLabel: {
+    position: 'absolute',
+    top: -38,
+    left: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    backgroundColor: 'rgba(0,10,14,0.82)',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(0,229,255,0.5)',
+    maxWidth: 220,
+  },
+  arLabelDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: theme.colors.secondary,
+  },
+  arLabelText: {
+    color: theme.colors.secondary,
+    fontFamily: mono,
+    fontSize: 10,
+    letterSpacing: 1.5,
+    fontWeight: '700',
+    flexShrink: 1,
+  },
+  arLabelConf: {
+    color: theme.colors.textDim,
+    fontFamily: mono,
+    fontSize: 9,
+    letterSpacing: 1,
+  },
+  arConfTrack: {
+    position: 'absolute',
+    bottom: -8,
+    left: 0,
+    right: 0,
+    height: 2,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    borderRadius: 1,
+  },
+  arConfFill: {
+    height: 2,
+    backgroundColor: theme.colors.secondary,
+    borderRadius: 1,
   },
 
   topHudWrap: { position: 'absolute', top: 0, left: 0, right: 0, paddingHorizontal: 20 },
@@ -456,32 +773,133 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 10,
   },
-  topHudLeft: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  topHudRight: {},
+  topHudLeft: { flexDirection: 'row', alignItems: 'center', gap: 8, flexShrink: 0 },
+  topHudRightRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flexShrink: 1,
+    marginLeft: 10,
+  },
+
+  settingsBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  settingsCard: {
+    width: '100%',
+    maxWidth: 380,
+    backgroundColor: '#0a0a0a',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: theme.colors.borderStrong,
+    padding: 20,
+  },
+  settingsHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
+  settingsTitle: {
+    color: theme.colors.primary,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontSize: 12,
+    letterSpacing: 3,
+    fontWeight: '700',
+    marginLeft: 8,
+  },
+  settingsHint: { color: theme.colors.textDim, fontSize: 12, lineHeight: 17, marginBottom: 14 },
+  settingsInput: {
+    backgroundColor: 'rgba(255,255,255,0.05)',
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: 10,
+    color: theme.colors.text,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 14,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  settingsStatus: {
+    marginTop: 10,
+    fontSize: 10,
+    letterSpacing: 1.5,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    color: theme.colors.textDim,
+    fontWeight: '700',
+  },
+  settingsBtnRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 18 },
+  settingsBtnGhost: {
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    marginLeft: 8,
+  },
+  settingsBtnGhostText: {
+    color: theme.colors.text,
+    fontSize: 11,
+    letterSpacing: 2,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontWeight: '700',
+  },
+  settingsBtnSave: {
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 999,
+    backgroundColor: theme.colors.primary,
+    marginLeft: 8,
+  },
+  settingsBtnSaveText: {
+    color: theme.colors.bg,
+    fontSize: 11,
+    letterSpacing: 2,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontWeight: '800',
+  },
   dot: { width: 8, height: 8, borderRadius: 4, marginRight: 8, shadowColor: theme.colors.primary, shadowOpacity: 0.8, shadowRadius: 6 },
   hudLabel: {
     color: theme.colors.text,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontFamily: mono,
     fontSize: 11,
     letterSpacing: 2.5,
     fontWeight: '600',
   },
   hudStatus: {
     color: theme.colors.primary,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    fontSize: 11,
-    letterSpacing: 2.5,
+    fontFamily: mono,
+    fontSize: 10,
+    letterSpacing: 1.5,
     fontWeight: '700',
+    flexShrink: 1,
+    marginRight: 8,
   },
-  topMetaRow: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 6, paddingTop: 6 },
+  topMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+    paddingTop: 6,
+  },
   metaMono: {
     color: theme.colors.textDim,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontFamily: mono,
     fontSize: 10,
     letterSpacing: 2,
   },
+  livePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
 
-  reticleWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  // paddingBottom lifts the reticle above the mode selector / scan controls
+  reticleWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingBottom: 170 },
   reticle: { width: RETICLE, height: RETICLE, overflow: 'visible' },
   reticleBorder: {
     ...StyleSheet.absoluteFillObject,
@@ -525,7 +943,7 @@ const styles = StyleSheet.create({
   reticleHint: {
     marginTop: 20,
     color: theme.colors.text,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontFamily: mono,
     fontSize: 11,
     letterSpacing: 3,
     backgroundColor: 'rgba(0,0,0,0.6)',
@@ -537,9 +955,12 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
 
-  bottomWrap: { position: 'absolute', bottom: 80, left: 0, right: 0, paddingBottom: 12 },
+  bottomWrap: { position: 'absolute', left: 0, right: 0, paddingBottom: 4 },
   tipsRow: { paddingHorizontal: 16, gap: 8, paddingBottom: 14 },
   tipPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 999,
@@ -548,11 +969,19 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.45)',
     marginRight: 8,
   },
+  tipPillActive: {
+    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.primary,
+  },
   tipText: {
     color: theme.colors.textDim,
     fontSize: 10,
     letterSpacing: 2,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontFamily: mono,
+  },
+  tipTextActive: {
+    color: theme.colors.bg,
+    fontWeight: '700',
   },
   controlRow: {
     flexDirection: 'row',
@@ -595,7 +1024,7 @@ const styles = StyleSheet.create({
   fabLabel: {
     marginTop: 10,
     color: theme.colors.primary,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontFamily: mono,
     fontSize: 10,
     letterSpacing: 3,
     fontWeight: '700',
@@ -614,7 +1043,7 @@ const styles = StyleSheet.create({
   },
   analyzingText: {
     color: theme.colors.secondary,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontFamily: mono,
     fontSize: 10,
     letterSpacing: 2,
   },
