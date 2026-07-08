@@ -12,6 +12,7 @@ import {
   KeyboardAvoidingView,
   Alert,
   Dimensions,
+  Share,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -69,6 +70,27 @@ export default function ScanDetailScreen() {
       setScan(updated);
     } catch {
       /* ignore */
+    }
+  };
+
+  const onShare = async () => {
+    if (!scan) return;
+    const lines = [
+      `🔍 ${scan.name}`,
+      scan.description,
+      scan.material ? `Material: ${scan.material}` : '',
+      scan.sustainability_score >= 0
+        ? `Sustainability ${scan.sustainability_score}/100 · Recycling ${scan.recycling_score}/100`
+        : '',
+      scan.carbon_footprint ? `Carbon: ${scan.carbon_footprint}` : '',
+      scan.decomposition_years ? `Decomposes in: ${scan.decomposition_years}` : '',
+      scan.insights[0] ? `Did you know? ${scan.insights[0]}` : '',
+      '— scanned with OmniScan AR',
+    ].filter(Boolean);
+    try {
+      await Share.share({ message: lines.join('\n') });
+    } catch {
+      /* user dismissed */
     }
   };
 
@@ -190,13 +212,21 @@ export default function ScanDetailScreen() {
             <Text style={styles.topLabel}>SCAN RESULT</Text>
             <Text style={styles.topCode}>ID · {scan.id.slice(0, 8).toUpperCase()}</Text>
           </View>
-          <TouchableOpacity onPress={onToggleFav} style={styles.iconBtn} testID="toggle-favorite-btn">
-            <Ionicons
-              name={scan.favorite ? 'star' : 'star-outline'}
-              size={22}
-              color={scan.favorite ? theme.colors.primary : theme.colors.text}
-            />
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <TouchableOpacity onPress={onShare} style={styles.iconBtn} testID="share-scan-btn">
+              <Ionicons name="share-social-outline" size={20} color={theme.colors.text} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={onToggleFav}
+              style={[styles.iconBtn, { marginLeft: 8 }]}
+              testID="toggle-favorite-btn">
+              <Ionicons
+                name={scan.favorite ? 'star' : 'star-outline'}
+                size={22}
+                color={scan.favorite ? theme.colors.primary : theme.colors.text}
+              />
+            </TouchableOpacity>
+          </View>
         </View>
       </SafeAreaView>
 

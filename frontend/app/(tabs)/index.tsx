@@ -33,7 +33,10 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { theme, SCAN_MODES } from '../../src/theme';
 import { scanImage, detectObjects } from '../../src/api';
 import { Track, updateTracks, mapBoxToScreen } from '../../src/tracking';
+import Constants from 'expo-constants';
 import { getBackendUrl, setBackendUrl, defaultBackendUrl, pingBackend } from '../../src/config';
+
+const APP_VERSION = Constants.expoConfig?.version ?? '?';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 // Scale the reticle to the screen so it never collides with the HUD controls.
@@ -48,6 +51,7 @@ export default function ScannerScreen() {
   const webInputRef = useRef<HTMLInputElement | null>(null);
   const [permission, requestPermission] = useCameraPermissions();
   const [facing, setFacing] = useState<'back' | 'front'>('back');
+  const [torch, setTorch] = useState(false);
   const [busy, setBusy] = useState(false);
   const [statusText, setStatusText] = useState('READY');
   const [previewB64, setPreviewB64] = useState<string | null>(null);
@@ -58,6 +62,7 @@ export default function ScannerScreen() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [serverUrl, setServerUrl] = useState('');
   const [serverStatus, setServerStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
+  const [serverDetail, setServerDetail] = useState('');
 
   // Live AR state
   const [liveMode, setLiveMode] = useState(Platform.OS !== 'web');
@@ -98,6 +103,7 @@ export default function ScannerScreen() {
 
   // Self-scheduling live detection loop.
   const runLiveLoop = useCallback(async () => {
+    let failures = 0;
     while (focusedRef.current && liveRef.current && Platform.OS !== 'web') {
       if (busyRef.current) {
         await new Promise((r) => setTimeout(r, 400));
@@ -111,6 +117,7 @@ export default function ScannerScreen() {
         }
         const { objects } = await detectObjects(frame.b64);
         if (!focusedRef.current || !liveRef.current || busyRef.current) break;
+        failures = 0;
         const updated = updateTracks(tracksRef.current, objects);
         tracksRef.current = updated;
         setTracks(updated);
@@ -119,8 +126,14 @@ export default function ScannerScreen() {
           updated.length > 0 ? `LIVE · ${updated.length} TRACKED` : 'LIVE · SEARCHING'
         );
       } catch {
-        // Backend hiccup or capture race: keep the loop alive.
-        if (focusedRef.current && liveRef.current) setStatusText('LIVE · RECONNECTING');
+        // Backend hiccup or capture race: keep the loop alive but tell the
+        // user where to look once it clearly isn't transient.
+        failures += 1;
+        if (focusedRef.current && liveRef.current) {
+          setStatusText(failures >= 3 ? 'CHECK SERVER · TAP ⚙' : 'LIVE · RECONNECTING');
+        }
+        // Back off while the server is unreachable so we don't drain battery.
+        if (failures >= 3) await new Promise((r) => setTimeout(r, 2500));
       }
       await new Promise((r) => setTimeout(r, LIVE_LOOP_PAUSE_MS));
     }
@@ -164,8 +177,10 @@ export default function ScannerScreen() {
 
   const testServer = async () => {
     setServerStatus('testing');
-    const ok = await pingBackend(serverUrl);
-    setServerStatus(ok ? 'ok' : 'fail');
+    setServerDetail('');
+    const result = await pingBackend(serverUrl);
+    setServerStatus(result.ok ? 'ok' : 'fail');
+    setServerDetail(result.detail);
   };
 
   const saveServer = async () => {
@@ -261,7 +276,19 @@ export default function ScannerScreen() {
       setPreviewB64(null);
       setHudActive(false);
       setStatusText('ERROR');
-      Alert.alert('Scan failed', String(err?.message || err));
+      const msg = String(err?.message || err);
+      if (/network request failed|failed to fetch|timed? ?out/i.test(msg)) {
+        Alert.alert(
+          'Cannot reach server',
+          `${msg}\n\nCheck that the OmniScan server is running and the URL in settings is correct.`,
+          [
+            { text: 'Server settings', onPress: openSettings },
+            { text: 'OK', style: 'cancel' },
+          ]
+        );
+      } else {
+        Alert.alert('Scan failed', msg);
+      }
     }
   };
 
@@ -391,6 +418,7 @@ export default function ScannerScreen() {
           ref={(r) => { cameraRef.current = r; }}
           style={StyleSheet.absoluteFillObject}
           facing={facing}
+          enableTorch={torch}
           animateShutter={false}
         />
       )}
@@ -456,24 +484,36 @@ export default function ScannerScreen() {
         <View style={styles.topMetaRow}>
           <Text style={styles.metaMono}>MODE · {mode.toUpperCase()}</Text>
           {Platform.OS !== 'web' && (
-            <TouchableOpacity onPress={toggleLive} style={styles.livePill} testID="live-toggle">
-              <View
-                style={[
-                  styles.dot,
-                  {
-                    marginRight: 4,
-                    backgroundColor: liveMode ? theme.colors.secondary : theme.colors.textFaint,
-                  },
-                ]}
-              />
-              <Text
-                style={[
-                  styles.metaMono,
-                  liveMode && { color: theme.colors.secondary },
-                ]}>
-                LIVE AR {liveMode ? 'ON' : 'OFF'}
-              </Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <TouchableOpacity
+                onPress={() => setTorch((t) => !t)}
+                style={[styles.livePill, torch && { borderColor: theme.colors.primary }]}
+                testID="torch-toggle">
+                <Ionicons
+                  name={torch ? 'flash' : 'flash-outline'}
+                  size={12}
+                  color={torch ? theme.colors.primary : theme.colors.textDim}
+                />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={toggleLive} style={styles.livePill} testID="live-toggle">
+                <View
+                  style={[
+                    styles.dot,
+                    {
+                      marginRight: 4,
+                      backgroundColor: liveMode ? theme.colors.secondary : theme.colors.textFaint,
+                    },
+                  ]}
+                />
+                <Text
+                  style={[
+                    styles.metaMono,
+                    liveMode && { color: theme.colors.secondary },
+                  ]}>
+                  LIVE AR {liveMode ? 'ON' : 'OFF'}
+                </Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
       </SafeAreaView>
@@ -589,9 +629,11 @@ export default function ScannerScreen() {
             <View style={styles.settingsHeader}>
               <Ionicons name="server-outline" size={16} color={theme.colors.primary} />
               <Text style={styles.settingsTitle}>OMNISCAN SERVER</Text>
+              <Text style={styles.settingsVersion}>APP v{APP_VERSION}</Text>
             </View>
             <Text style={styles.settingsHint}>
-              URL of the OmniScan backend this app connects to.
+              URL of the OmniScan backend this app connects to. http:// is added
+              automatically if you leave it out.
             </Text>
             <TextInput
               style={styles.settingsInput}
@@ -618,8 +660,15 @@ export default function ScannerScreen() {
                 {serverStatus === 'testing'
                   ? 'TESTING CONNECTION...'
                   : serverStatus === 'ok'
-                    ? 'CONNECTED · SERVER ONLINE'
-                    : 'UNREACHABLE · CHECK URL / WIFI / FIREWALL'}
+                    ? `CONNECTED · ${serverDetail.toUpperCase()}`
+                    : `FAILED · ${serverDetail}`}
+              </Text>
+            )}
+            {serverStatus === 'fail' && (
+              <Text style={styles.settingsHelp}>
+                Same Wi-Fi as the server? If the URL opens in your phone browser
+                but fails here, check phone settings → Apps → OmniScan → allow
+                Wi-Fi / background data (common on Oppo, Realme, OnePlus, Vivo).
               </Text>
             )}
             <View style={styles.settingsBtnRow}>
@@ -799,6 +848,13 @@ const styles = StyleSheet.create({
     padding: 20,
   },
   settingsHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
+  settingsVersion: {
+    marginLeft: 'auto',
+    color: theme.colors.textFaint,
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontSize: 9,
+    letterSpacing: 1.5,
+  },
   settingsTitle: {
     color: theme.colors.primary,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
@@ -826,6 +882,12 @@ const styles = StyleSheet.create({
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
     color: theme.colors.textDim,
     fontWeight: '700',
+  },
+  settingsHelp: {
+    marginTop: 8,
+    fontSize: 11,
+    lineHeight: 16,
+    color: theme.colors.textDim,
   },
   settingsBtnRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 18 },
   settingsBtnGhost: {
