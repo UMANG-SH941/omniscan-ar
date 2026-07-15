@@ -108,8 +108,14 @@ class GeminiImageProvider(ImageGenProvider):
         try:
             async with httpx.AsyncClient(timeout=120.0) as client:
                 resp = await client.post(url, params={"key": GEMINI_API_KEY}, json=body)
+                if resp.status_code == 429:
+                    raise ImageGenError(
+                        "Gemini image model is rate-limited on the free tier — "
+                        "wait a minute before generating again")
                 resp.raise_for_status()
                 data = resp.json()
+        except ImageGenError:
+            raise
         except httpx.HTTPError as e:
             raise ImageGenError(f"Gemini image call failed: {e}") from e
 
@@ -118,6 +124,34 @@ class GeminiImageProvider(ImageGenProvider):
             if inline and inline.get("data"):
                 return inline["data"]
         raise ImageGenError("Gemini returned no image data")
+
+
+class PollinationsProvider(ImageGenProvider):
+    """Free, keyless text-to-image API (https://pollinations.ai).
+
+    No img2img, so geometry preservation relies on the prompt alone — used as
+    the always-available fallback when Gemini's free tier is rate-limited.
+    """
+    name = "pollinations"
+
+    def available(self) -> bool:
+        return True
+
+    async def generate(self, prompt: str,
+                       reference_b64: Optional[str] = None) -> str:
+        import base64
+        from urllib.parse import quote
+        url = (f"https://image.pollinations.ai/prompt/{quote(prompt[:900])}"
+               f"?width=768&height=768&nologo=true")
+        try:
+            async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                if not resp.headers.get("content-type", "").startswith("image/"):
+                    raise ImageGenError("Pollinations returned no image")
+                return base64.b64encode(resp.content).decode("utf-8")
+        except httpx.HTTPError as e:
+            raise ImageGenError(f"Pollinations call failed: {e}") from e
 
 
 class OpenAIImageProvider(ImageGenProvider):
@@ -145,10 +179,12 @@ class OpenAIImageProvider(ImageGenProvider):
 
 class ImageGenerationService:
     def __init__(self, providers: Optional[List[ImageGenProvider]] = None):
-        # Open-source/self-hosted first, then free-tier hosted, then paid.
+        # Open-source/self-hosted first, then free-tier hosted (Gemini does
+        # img2img so it leads), then keyless fallback, then paid.
         self._providers = providers or [
             StableDiffusionProvider(),
             GeminiImageProvider(),
+            PollinationsProvider(),
             OpenAIImageProvider(),
         ]
 

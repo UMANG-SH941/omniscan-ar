@@ -1,0 +1,18 @@
+[17:10:34] Device: cpu
+[17:10:34] Downloading TrashNet from https://huggingface.co/datasets/cara-org/trashnet/resolve/main/dataset-resized.zip ...
+[17:10:35]   mirror failed: HTTP Error 401: Unauthorized
+[17:10:35] Downloading TrashNet from https://github.com/garythung/trashnet/raw/master/data/dataset-resized.zip ...
+[17:10:45] Extracting dataset-resized.zip ...
+[17:10:46] Dataset: 2527 images, 6 classes ['cardboard', 'glass', 'metal', 'paper', 'plastic', 'trash']
+[17:10:46] Train 2021 / Val 506; train dist {1: 403, 3: 478, 2: 317, 4: 390, 0: 319, 5: 114}
+[17:12:05] Epoch 1/6: loss 0.9446, val_acc 0.7569 (77s)
+[17:12:39] Epoch 2/6: loss 0.5824, val_acc 0.8399 (34s)
+[17:13:16] Epoch 3/6: loss 0.5076, val_acc 0.8656 (37s)
+[17:13:50] Epoch 4/6: loss 0.4198, val_acc 0.8696 (34s)
+[17:14:22] Epoch 5/6: loss 0.3745, val_acc 0.8735 (32s)
+[17:14:54] Epoch 6/6: loss 0.3618, val_acc 0.8893 (32s)
+[17:20:06] Dataset already present.
+[17:20:06] Dataset: 2527 images, 6 classes ['cardboard', 'glass', 'metal', 'paper', 'plastic', 'trash']
+[17:20:06] Train 2021 / Val 506; train dist {1: 403, 3: 478, 2: 317, 4: 390, 0: 319, 5: 114}
+[17:20:11] Reloaded checkpoint: val_acc 0.8893
+[17:20:12] Export complete: material_classifier.onnx + metrics.json

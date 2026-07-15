@@ -100,3 +100,7 @@ backend/data/
 .em/
 
 cloudflared.exe
+
+# Research artifacts: dataset + torch checkpoint stay local; ONNX ships
+research/data/
+research/models/*.pt

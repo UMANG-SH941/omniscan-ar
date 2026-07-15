@@ -30,6 +30,7 @@ from services.image_generation import (  # noqa: E402
 )
 from services.knowledge import KnowledgeService  # noqa: E402
 from services.llm import LlmError, LlmUnavailable, get_llm, llm_status  # noqa: E402
+from services.material_classifier import MaterialClassifierService  # noqa: E402
 from services.prompt_generation import FUTURE_STAGES, PromptGenerationService  # noqa: E402
 from services.storage import ScanRepository, create_repository  # noqa: E402
 from services.vision_language import VisionLanguageService  # noqa: E402
@@ -43,6 +44,7 @@ logger = logging.getLogger(__name__)
 repo: Optional[ScanRepository] = None
 image_gen = ImageGenerationService()
 prompt_gen = PromptGenerationService()
+material_clf = MaterialClassifierService()
 
 
 @asynccontextmanager
@@ -112,7 +114,12 @@ async def scan_object(payload: ScanCreate):
         logger.exception("Scan pipeline failed")
         raise HTTPException(status_code=502, detail=f"Scan failed: {e}")
 
-    scan = Scan(**analysis, **enrichment, mode=mode, image_base64=b64)
+    # Second opinion from our self-trained material classifier (research/)
+    ml = material_clf.classify(b64)
+    ml_fields = ({"ml_material": ml["label"], "ml_confidence": ml["confidence"]}
+                 if ml else {})
+
+    scan = Scan(**analysis, **enrichment, **ml_fields, mode=mode, image_base64=b64)
     await repo.insert(scan.model_dump())
     return scan
 

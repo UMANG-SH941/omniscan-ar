@@ -19,7 +19,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "").lower()  # "", "gemini", "ollama"
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "").lower()  # "", "openai", "gemini", "ollama"
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
@@ -60,6 +62,71 @@ class BaseLlm:
     async def generate(self, system: str, user_text: str,
                        image_b64: Optional[str] = None) -> str:
         raise NotImplementedError
+
+
+class OpenAiLlm(BaseLlm):
+    name = "openai"
+
+    def __init__(self, model: str = OPENAI_MODEL):
+        self.model = model
+
+    async def generate(self, system: str, user_text: str,
+                       image_b64: Optional[str] = None) -> str:
+        content: list = [{"type": "text", "text": user_text}]
+        if image_b64:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+            })
+        body = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": content},
+            ],
+        }
+        try:
+            async with httpx.AsyncClient(timeout=90.0) as client:
+                resp = await client.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                    json=body)
+                resp.raise_for_status()
+                data = resp.json()
+            return data["choices"][0]["message"]["content"]
+        except httpx.HTTPStatusError as e:
+            detail = ""
+            try:
+                detail = e.response.json().get("error", {}).get("code", "")
+            except Exception:
+                pass
+            raise LlmError(f"OpenAI call failed ({e.response.status_code} {detail})") from e
+        except (httpx.HTTPError, KeyError, IndexError) as e:
+            raise LlmError(f"OpenAI call failed: {e}") from e
+
+
+class FallbackLlm(BaseLlm):
+    """Tries providers in order; the first success wins.
+
+    Lets a primary provider without quota (or mid-outage) degrade silently
+    to the next one instead of failing the request.
+    """
+
+    def __init__(self, chain: list):
+        self._chain = chain
+        self.name = "→".join(p.name for p in chain)
+        self.model = " / ".join(getattr(p, "model", "") for p in chain)
+
+    async def generate(self, system: str, user_text: str,
+                       image_b64: Optional[str] = None) -> str:
+        last: Optional[Exception] = None
+        for provider in self._chain:
+            try:
+                return await provider.generate(system, user_text, image_b64)
+            except LlmError as e:
+                logger.warning("LLM %s failed (%s); trying next", provider.name, e)
+                last = e
+        raise LlmError(f"All LLM providers failed. Last: {last}")
 
 
 class GeminiLlm(BaseLlm):
@@ -141,17 +208,28 @@ def get_llm() -> BaseLlm:
     if _llm is None:
         if LLM_PROVIDER == "ollama":
             _llm = OllamaLlm()
-        elif LLM_PROVIDER == "gemini" or GEMINI_API_KEY:
+        elif LLM_PROVIDER == "gemini":
             if not GEMINI_API_KEY:
-                raise LlmUnavailable(
-                    "LLM_PROVIDER=gemini but GEMINI_API_KEY is not set")
+                raise LlmUnavailable("LLM_PROVIDER=gemini but GEMINI_API_KEY is not set")
             _llm = GeminiLlm()
+        elif LLM_PROVIDER == "openai":
+            if not OPENAI_API_KEY:
+                raise LlmUnavailable("LLM_PROVIDER=openai but OPENAI_API_KEY is not set")
+            _llm = OpenAiLlm()
         else:
-            raise LlmUnavailable(
-                "No LLM configured. Either set GEMINI_API_KEY in backend/.env "
-                "(free at https://aistudio.google.com/apikey) or run Ollama "
-                "locally and set LLM_PROVIDER=ollama (open source, "
-                "https://ollama.com).")
+            # Auto mode: OpenAI first when configured, Gemini as fallback.
+            chain: list = []
+            if OPENAI_API_KEY:
+                chain.append(OpenAiLlm())
+            if GEMINI_API_KEY:
+                chain.append(GeminiLlm())
+            if not chain:
+                raise LlmUnavailable(
+                    "No LLM configured. Set OPENAI_API_KEY and/or GEMINI_API_KEY "
+                    "in backend/.env (Gemini is free at "
+                    "https://aistudio.google.com/apikey), or run Ollama locally "
+                    "and set LLM_PROVIDER=ollama (open source, https://ollama.com).")
+            _llm = chain[0] if len(chain) == 1 else FallbackLlm(chain)
         logger.info("LLM backend: %s (%s)", _llm.name, _llm.model)
     return _llm
 

@@ -53,6 +53,10 @@ class Scan(BaseModel):
     mode: str = "normal"
     mode_focus: str = ""
 
+    # Prediction from our self-trained material classifier (research/)
+    ml_material: str = ""
+    ml_confidence: float = -1.0
+
     # Media
     image_base64: str = ""
     # future simulation images keyed by years-in-the-future ("10", "100", ...)

@@ -14,6 +14,7 @@ import {
   TextInput,
 } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import { BlurView } from 'expo-blur';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
@@ -67,6 +68,7 @@ export default function ScannerScreen() {
   // Live AR state
   const [liveMode, setLiveMode] = useState(Platform.OS !== 'web');
   const [tracks, setTracks] = useState<Track[]>([]);
+  const [selectedTrackId, setSelectedTrackId] = useState<number | null>(null);
   const [frameDims, setFrameDims] = useState({ w: LIVE_FRAME_WIDTH, h: LIVE_FRAME_WIDTH });
   const tracksRef = useRef<Track[]>([]);
   const busyRef = useRef(false);
@@ -423,27 +425,37 @@ export default function ScannerScreen() {
         />
       )}
 
-      {/* LIVE AR OVERLAYS */}
+      {/* LIVE AR OVERLAYS — tap a box for a holographic detail popup */}
       {showLiveOverlays &&
         tracks.map((t) => {
           const r = mapBoxToScreen(t, frameDims.w, frameDims.h, SCREEN_W, SCREEN_H);
           if (r.w < 8 || r.h < 8) return null;
+          const selected = selectedTrackId === t.id;
           return (
             <Animated.View
               key={t.id}
               entering={FadeIn.duration(250)}
               exiting={FadeOut.duration(200)}
-              pointerEvents="none"
-              style={[styles.arBox, { left: r.x, top: r.y, width: r.w, height: r.h }]}
+              style={[
+                styles.arBox,
+                { left: r.x, top: r.y, width: r.w, height: r.h },
+                selected && { borderColor: theme.colors.primary },
+              ]}
               testID={`ar-track-${t.id}`}>
+              <TouchableOpacity
+                activeOpacity={0.7}
+                style={StyleSheet.absoluteFill}
+                onPress={() => setSelectedTrackId(selected ? null : t.id)}
+                testID={`ar-track-tap-${t.id}`}
+              />
               {/* corner ticks */}
-              <View style={[styles.arCorner, styles.arTL]} />
-              <View style={[styles.arCorner, styles.arTR]} />
-              <View style={[styles.arCorner, styles.arBL]} />
-              <View style={[styles.arCorner, styles.arBR]} />
+              <View style={[styles.arCorner, styles.arTL]} pointerEvents="none" />
+              <View style={[styles.arCorner, styles.arTR]} pointerEvents="none" />
+              <View style={[styles.arCorner, styles.arBL]} pointerEvents="none" />
+              <View style={[styles.arCorner, styles.arBR]} pointerEvents="none" />
               {/* connector + holographic label (never covers the object) */}
-              <View style={styles.arConnector} />
-              <View style={styles.arLabel}>
+              <View style={styles.arConnector} pointerEvents="none" />
+              <View style={styles.arLabel} pointerEvents="none">
                 <View style={styles.arLabelDot} />
                 <Text style={styles.arLabelText} numberOfLines={1}>
                   {t.label.toUpperCase()}
@@ -451,7 +463,7 @@ export default function ScannerScreen() {
                 <Text style={styles.arLabelConf}>{Math.round(t.confidence * 100)}%</Text>
               </View>
               {/* confidence bar */}
-              <View style={styles.arConfTrack}>
+              <View style={styles.arConfTrack} pointerEvents="none">
                 <View
                   style={[styles.arConfFill, { width: `${Math.round(t.confidence * 100)}%` }]}
                 />
@@ -459,6 +471,60 @@ export default function ScannerScreen() {
             </Animated.View>
           );
         })}
+
+      {/* TRANSLUCENT AR DETAIL POPUP anchored to the selected track */}
+      {showLiveOverlays &&
+        (() => {
+          const t = tracks.find((x) => x.id === selectedTrackId);
+          if (!t) return null;
+          const r = mapBoxToScreen(t, frameDims.w, frameDims.h, SCREEN_W, SCREEN_H);
+          const popW = 240;
+          const left = Math.min(Math.max(r.x, 12), SCREEN_W - popW - 12);
+          const below = r.y + r.h + 14;
+          const top = below + 150 < SCREEN_H - 220 ? below : Math.max(60, r.y - 160);
+          return (
+            <Animated.View
+              entering={FadeIn.duration(200)}
+              exiting={FadeOut.duration(150)}
+              style={[styles.arPopupWrap, { left, top, width: popW }]}
+              testID="ar-popup">
+              <BlurView intensity={35} tint="dark" style={styles.arPopup}>
+                <View style={styles.arPopupHeader}>
+                  <View style={[styles.dot, { backgroundColor: theme.colors.secondary }]} />
+                  <Text style={styles.arPopupTitle} numberOfLines={1}>
+                    {t.label.toUpperCase()}
+                  </Text>
+                  <TouchableOpacity onPress={() => setSelectedTrackId(null)} hitSlop={10}>
+                    <Ionicons name="close" size={15} color={theme.colors.textDim} />
+                  </TouchableOpacity>
+                </View>
+                <View style={styles.arPopupRow}>
+                  <Text style={styles.arPopupKey}>CONFIDENCE</Text>
+                  <View style={styles.arPopupMeter}>
+                    <View
+                      style={[styles.arPopupMeterFill, { width: `${Math.round(t.confidence * 100)}%` }]}
+                    />
+                  </View>
+                  <Text style={styles.arPopupVal}>{Math.round(t.confidence * 100)}%</Text>
+                </View>
+                <View style={styles.arPopupRow}>
+                  <Text style={styles.arPopupKey}>TRACK ID</Text>
+                  <Text style={styles.arPopupVal}>#{String(t.id).padStart(3, '0')} · {t.age} FRAMES</Text>
+                </View>
+                <TouchableOpacity
+                  style={styles.arPopupBtn}
+                  onPress={() => {
+                    setSelectedTrackId(null);
+                    onScan();
+                  }}
+                  testID="ar-popup-deep-scan">
+                  <Ionicons name="scan" size={13} color={theme.colors.bg} />
+                  <Text style={styles.arPopupBtnText}>DEEP SCAN THIS</Text>
+                </TouchableOpacity>
+              </BlurView>
+            </Animated.View>
+          );
+        })()}
 
       {/* TOP HUD */}
       <SafeAreaView edges={['top']} pointerEvents="box-none" style={styles.topHudWrap}>
@@ -807,6 +873,70 @@ const styles = StyleSheet.create({
     height: 2,
     backgroundColor: theme.colors.secondary,
     borderRadius: 1,
+  },
+
+  // AR detail popup
+  arPopupWrap: {
+    position: 'absolute',
+    borderRadius: 14,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: 'rgba(0,229,255,0.45)',
+    shadowColor: theme.colors.secondary,
+    shadowOpacity: 0.5,
+    shadowRadius: 14,
+  },
+  arPopup: { padding: 14, backgroundColor: 'rgba(4,12,16,0.55)' },
+  arPopupHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  arPopupTitle: {
+    flex: 1,
+    color: theme.colors.text,
+    fontFamily: mono,
+    fontSize: 11,
+    letterSpacing: 1.5,
+    fontWeight: '800',
+  },
+  arPopupRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 8 },
+  arPopupKey: {
+    color: theme.colors.textDim,
+    fontFamily: mono,
+    fontSize: 8.5,
+    letterSpacing: 1.5,
+    width: 74,
+  },
+  arPopupMeter: {
+    flex: 1,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    overflow: 'hidden',
+    marginRight: 8,
+  },
+  arPopupMeterFill: { height: 4, borderRadius: 2, backgroundColor: theme.colors.secondary },
+  arPopupVal: {
+    color: theme.colors.secondary,
+    fontFamily: mono,
+    fontSize: 9.5,
+    letterSpacing: 1,
+    fontWeight: '700',
+  },
+  arPopupBtn: {
+    marginTop: 4,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: theme.colors.primary,
+    borderRadius: 999,
+    paddingVertical: 9,
+  },
+  arPopupBtnText: {
+    color: theme.colors.bg,
+    fontFamily: mono,
+    fontSize: 10,
+    letterSpacing: 2,
+    fontWeight: '800',
+    marginLeft: 6,
   },
 
   topHudWrap: { position: 'absolute', top: 0, left: 0, right: 0, paddingHorizontal: 20 },

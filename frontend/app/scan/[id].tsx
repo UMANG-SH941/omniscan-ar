@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import Animated, { FadeInDown, useAnimatedStyle, useSharedValue, withDelay, withTiming } from 'react-native-reanimated';
 import {
   View,
   Text,
@@ -43,6 +44,13 @@ export default function ScanDetailScreen() {
   const [futureYears, setFutureYears] = useState(0);
   const [generating, setGenerating] = useState(false);
   const [futureError, setFutureError] = useState<string | null>(null);
+  const [cooldown, setCooldown] = useState(0); // seconds until GENERATE re-enabled
+
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const t = setTimeout(() => setCooldown((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [cooldown]);
   const chatRef = useRef<ScrollView | null>(null);
 
   useEffect(() => {
@@ -132,7 +140,7 @@ export default function ScanDetailScreen() {
   const onSelectStage = async (years: number) => {
     setFutureYears(years);
     setFutureError(null);
-    if (!scan || years === 0 || generating) return;
+    if (!scan || years === 0 || generating || cooldown > 0) return;
     if (scan.future_images?.[String(years)]) return; // cached
     setGenerating(true);
     try {
@@ -149,7 +157,11 @@ export default function ScanDetailScreen() {
           : prev
       );
     } catch (e: any) {
-      setFutureError(String(e?.message || e));
+      const msg = String(e?.message || e);
+      setFutureError(msg);
+      // Free-tier image models are rate-limited per minute — enforce a pause
+      // instead of letting repeated taps burn the whole daily quota.
+      if (/rate.?limit|429|quota/i.test(msg)) setCooldown(60);
     } finally {
       setGenerating(false);
     }
@@ -312,6 +324,23 @@ export default function ScanDetailScreen() {
 
         {tab === 'overview' && (
           <View style={styles.sectionWrap}>
+            {scan.ml_material && scan.ml_confidence >= 0 ? (
+              <Animated.View entering={FadeInDown.duration(350)} style={styles.mlCard} testID="ml-card">
+                <View style={styles.sectionHeader}>
+                  <Ionicons name="hardware-chip-outline" size={14} color={theme.colors.secondary} />
+                  <Text style={[styles.sectionTitle, { color: theme.colors.secondary, marginLeft: 8 }]}>
+                    ON-DEVICE MODEL · SECOND OPINION
+                  </Text>
+                </View>
+                <Text style={styles.mlText}>
+                  Our self-trained MobileNetV3 classifier (TrashNet) reads this as{' '}
+                  <Text style={{ color: theme.colors.secondary, fontWeight: '800' }}>
+                    {scan.ml_material.toUpperCase()}
+                  </Text>{' '}
+                  with {Math.round(scan.ml_confidence * 100)}% confidence.
+                </Text>
+              </Animated.View>
+            ) : null}
             <SectionCard title="DESCRIPTION" body={scan.description} />
             <SectionCard title="USAGE · PURPOSE" body={scan.usage} />
             {scan.physical_properties ? (
@@ -451,49 +480,89 @@ export default function ScanDetailScreen() {
               })}
             </ScrollView>
 
-            {/* Simulation viewport */}
-            <View style={styles.futureViewport} testID="future-viewport">
-              {futureImage ? (
-                <Image
-                  source={{ uri: `data:image/jpeg;base64,${futureImage}` }}
-                  style={StyleSheet.absoluteFillObject}
-                  resizeMode="cover"
-                />
-              ) : (
-                <View style={[StyleSheet.absoluteFillObject, styles.futureEmpty]}>
-                  {generating ? (
-                    <>
-                      <ActivityIndicator color={theme.colors.secondary} size="large" />
-                      <Text style={styles.futureEmptyText}>
-                        SIMULATING +{futureYears} YEARS OF DEGRADATION...
-                      </Text>
-                      <Text style={styles.futureEmptySub}>
-                        AI image generation can take up to a minute
-                      </Text>
-                    </>
-                  ) : (
-                    <>
-                      <Ionicons name="planet-outline" size={40} color={theme.colors.secondary} />
-                      <Text style={styles.futureEmptyText}>
-                        NO SIMULATION FOR +{futureYears}Y YET
-                      </Text>
-                      <TouchableOpacity
-                        style={styles.generateBtn}
-                        onPress={() => onSelectStage(futureYears)}
-                        testID="generate-future-btn">
-                        <Text style={styles.generateBtnText}>GENERATE</Text>
-                      </TouchableOpacity>
-                    </>
-                  )}
+            {/* Simulation viewport: side-by-side NOW vs FUTURE once generated */}
+            {futureYears !== 0 && futureImage ? (
+              <Animated.View entering={FadeInDown.duration(400)} style={styles.compareRow}>
+                <View style={styles.compareCol} testID="compare-now">
+                  <View style={styles.compareImgWrap}>
+                    <Image
+                      source={{ uri: `data:image/jpeg;base64,${scan.image_base64}` }}
+                      style={StyleSheet.absoluteFillObject}
+                      resizeMode="cover"
+                    />
+                  </View>
+                  <View style={[styles.compareBadge, { borderColor: theme.colors.primaryDim }]}>
+                    <Text style={[styles.compareBadgeText, { color: theme.colors.primary }]}>NOW</Text>
+                  </View>
                 </View>
-              )}
-              <View style={styles.futureBadge}>
-                <View style={[styles.dotSmall, { backgroundColor: theme.colors.secondary }]} />
-                <Text style={styles.futureBadgeText}>
-                  {futureYears === 0 ? 'PRESENT DAY' : `+${futureYears} YEARS · AI SIMULATION`}
-                </Text>
+                <Ionicons
+                  name="arrow-forward"
+                  size={18}
+                  color={theme.colors.secondary}
+                  style={{ marginHorizontal: 4 }}
+                />
+                <View style={styles.compareCol} testID="compare-future">
+                  <View style={[styles.compareImgWrap, { borderColor: theme.colors.secondaryDim }]}>
+                    <Image
+                      source={{ uri: `data:image/jpeg;base64,${futureImage}` }}
+                      style={StyleSheet.absoluteFillObject}
+                      resizeMode="cover"
+                    />
+                  </View>
+                  <View style={[styles.compareBadge, { borderColor: theme.colors.secondaryDim }]}>
+                    <Text style={[styles.compareBadgeText, { color: theme.colors.secondary }]}>
+                      +{futureYears} YEARS
+                    </Text>
+                  </View>
+                </View>
+              </Animated.View>
+            ) : (
+              <View style={styles.futureViewport} testID="future-viewport">
+                {futureImage ? (
+                  <Image
+                    source={{ uri: `data:image/jpeg;base64,${futureImage}` }}
+                    style={StyleSheet.absoluteFillObject}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <View style={[StyleSheet.absoluteFillObject, styles.futureEmpty]}>
+                    {generating ? (
+                      <>
+                        <ActivityIndicator color={theme.colors.secondary} size="large" />
+                        <Text style={styles.futureEmptyText}>
+                          SIMULATING +{futureYears} YEARS OF DEGRADATION...
+                        </Text>
+                        <Text style={styles.futureEmptySub}>
+                          AI image generation can take up to a minute
+                        </Text>
+                      </>
+                    ) : (
+                      <>
+                        <Ionicons name="planet-outline" size={40} color={theme.colors.secondary} />
+                        <Text style={styles.futureEmptyText}>
+                          NO SIMULATION FOR +{futureYears}Y YET
+                        </Text>
+                        <TouchableOpacity
+                          style={[styles.generateBtn, cooldown > 0 && { opacity: 0.4 }]}
+                          onPress={() => onSelectStage(futureYears)}
+                          disabled={cooldown > 0}
+                          testID="generate-future-btn">
+                          <Text style={styles.generateBtnText}>
+                            {cooldown > 0 ? `WAIT ${cooldown}s` : 'GENERATE'}
+                          </Text>
+                        </TouchableOpacity>
+                      </>
+                    )}
+                  </View>
+                )}
+                <View style={styles.futureBadge}>
+                  <View style={[styles.dotSmall, { backgroundColor: theme.colors.secondary }]} />
+                  <Text style={styles.futureBadgeText}>
+                    {futureYears === 0 ? 'PRESENT DAY' : `+${futureYears} YEARS · AI SIMULATION`}
+                  </Text>
+                </View>
               </View>
-            </View>
+            )}
 
             {futureError && (
               <View style={styles.errorCard} testID="future-error">
@@ -607,6 +676,11 @@ function SectionCard({
 
 function ScoreMeter({ label, value, color }: { label: string; value: number; color: string }) {
   const known = value >= 0;
+  const width = useSharedValue(0);
+  useEffect(() => {
+    width.value = withDelay(200, withTiming(known ? value : 0, { duration: 900 }));
+  }, [known, value, width]);
+  const fillStyle = useAnimatedStyle(() => ({ width: `${width.value}%` }));
   return (
     <View style={styles.meterWrap}>
       <View style={styles.meterHeader}>
@@ -614,11 +688,8 @@ function ScoreMeter({ label, value, color }: { label: string; value: number; col
         <Text style={[styles.meterValue, { color }]}>{known ? `${value}/100` : 'N/A'}</Text>
       </View>
       <View style={styles.meterTrack}>
-        <View
-          style={[
-            styles.meterFill,
-            { width: `${known ? value : 0}%`, backgroundColor: color, shadowColor: color },
-          ]}
+        <Animated.View
+          style={[styles.meterFill, fillStyle, { backgroundColor: color, shadowColor: color }]}
         />
       </View>
     </View>
@@ -910,7 +981,42 @@ const styles = StyleSheet.create({
   },
   timelineState: { color: theme.colors.text, fontSize: 13, lineHeight: 19 },
 
+  mlCard: {
+    backgroundColor: 'rgba(0,229,255,0.06)',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: theme.colors.secondaryDim,
+    marginBottom: 12,
+  },
+  mlText: { color: theme.colors.text, fontSize: 13, lineHeight: 20 },
+
   // Future tab
+  compareRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  compareCol: { flex: 1, alignItems: 'center' },
+  compareImgWrap: {
+    width: '100%',
+    aspectRatio: 0.9,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: '#000',
+    borderWidth: 1,
+    borderColor: theme.colors.primaryDim,
+  },
+  compareBadge: {
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  compareBadgeText: { fontFamily: mono, fontSize: 10, letterSpacing: 2, fontWeight: '800' },
   stageRow: { gap: 8, paddingBottom: 14 },
   stageChip: {
     flexDirection: 'row',

@@ -29,6 +29,8 @@ export type Scan = {
   environmental_impact: string;
   mode: string;
   mode_focus: string;
+  ml_material: string;
+  ml_confidence: number; // 0-1 from our trained classifier, -1 = unavailable
   image_base64: string;
   future_images: Record<string, string>;
   favorite: boolean;
