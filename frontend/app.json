@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "OmniScan AR",
+    "name": "EvoSnap",
     "slug": "frontend",
-    "version": "1.0.3",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "frontend",
@@ -17,7 +17,7 @@
     },
     "android": {
       "package": "com.omniscan.ar",
-      "versionCode": 4,
+      "versionCode": 5,
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#000"

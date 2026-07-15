@@ -1,4 +1,6 @@
-# OmniScan AR — AI Spatial Intelligence Platform
+# EvoSnap — AI Spatial Intelligence Platform
+
+***Evo**(lution) + **Snap** — snap any object, see its future. Formerly OmniScan AR.*
 
 An AI-powered AR scanner that detects objects in real time, understands them with
 vision-language models, reasons about their environmental impact, and simulates

@@ -9,7 +9,7 @@ from services.llm import BaseLlm, extract_json
 
 logger = logging.getLogger(__name__)
 
-ANALYSIS_SYSTEM = """You are the vision-language core of OmniScan AR, an AI spatial intelligence platform.
+ANALYSIS_SYSTEM = """You are the vision-language core of EvoSnap, an AI spatial intelligence platform.
 Analyze the primary object in the image and return ONLY a strict JSON object:
 
 {

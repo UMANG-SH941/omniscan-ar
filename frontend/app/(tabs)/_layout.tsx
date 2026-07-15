@@ -29,6 +29,10 @@ function ScanTabIcon({ color, focused }: { color: string; focused: boolean }) {
   );
 }
 
+function EarthTabIcon({ color }: { color: string }) {
+  return <Ionicons name="earth-outline" size={22} color={color} />;
+}
+
 function HistoryTabIcon({ color }: { color: string }) {
   return <Ionicons name="time-outline" size={22} color={color} />;
 }
@@ -71,6 +75,10 @@ export default function TabsLayout() {
       <Tabs.Screen
         name="index"
         options={{ title: 'SCAN', tabBarIcon: ScanTabIcon }}
+      />
+      <Tabs.Screen
+        name="earth"
+        options={{ title: 'EARTH', tabBarIcon: EarthTabIcon }}
       />
       <Tabs.Screen
         name="history"

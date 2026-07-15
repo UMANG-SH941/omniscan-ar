@@ -21,7 +21,7 @@ MODE_FOCUS = {
     "future": "how this object and its category will change over the coming decades",
 }
 
-KNOWLEDGE_SYSTEM = """You are the knowledge engine of OmniScan AR, an environmental-education AR platform.
+KNOWLEDGE_SYSTEM = """You are the knowledge engine of EvoSnap, an environmental-education AR platform.
 You receive a JSON analysis of a scanned object. Reason over it and return ONLY a strict JSON object:
 
 {
@@ -123,7 +123,7 @@ class KnowledgeService:
             f"Insights: {', '.join(scan.get('insights') or [])}"
         )
         system = (
-            "You are OmniScan AR's knowledge companion. The user scanned an object "
+            "You are EvoSnap knowledge companion. The user scanned an object "
             "and is asking follow-up questions about it.\n\n"
             f"{context}\n\n"
             "Answer concisely (2-4 sentences), factually and engagingly. "

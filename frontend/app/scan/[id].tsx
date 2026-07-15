@@ -85,7 +85,7 @@ export default function ScanDetailScreen() {
       scan.carbon_footprint ? `Carbon: ${scan.carbon_footprint}` : '',
       scan.decomposition_years ? `Decomposes in: ${scan.decomposition_years}` : '',
       scan.insights[0] ? `Did you know? ${scan.insights[0]}` : '',
-      '— scanned with OmniScan AR',
+      '— scanned with EvoSnap 🌍',
     ].filter(Boolean);
     try {
       await Share.share({ message: lines.join('\n') });

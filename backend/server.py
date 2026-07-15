@@ -1,4 +1,4 @@
-"""OmniScan AR — AI Spatial Intelligence Platform API.
+"""EvoSnap — AI Spatial Intelligence Platform API.
 
 Thin route layer; all intelligence lives in independently replaceable services
 (see backend/services/). Pipeline per the spec:
@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI):
         close()
 
 
-app = FastAPI(title="OmniScan AR", lifespan=lifespan)
+app = FastAPI(title="EvoSnap", lifespan=lifespan)
 api_router = APIRouter(prefix="/api")
 
 
@@ -75,7 +75,7 @@ def _services():
 
 @api_router.get("/")
 async def root():
-    return {"message": "OmniScan AR API", "status": "online"}
+    return {"message": "EvoSnap API", "status": "online"}
 
 
 @api_router.get("/health", response_model=HealthResponse)

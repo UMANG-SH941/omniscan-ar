@@ -360,7 +360,7 @@ export default function ScannerScreen() {
           </View>
           <Text style={styles.permTitle}>ENABLE SCANNER</Text>
           <Text style={styles.permBody}>
-            OmniScan needs camera access to identify objects in real-time using AI vision.
+            EvoSnap needs camera access to identify objects in real-time using AI vision.
           </Text>
           <TouchableOpacity
             style={styles.primaryBtn}
@@ -470,7 +470,7 @@ export default function ScannerScreen() {
                 { backgroundColor: liveMode ? theme.colors.secondary : theme.colors.primary },
               ]}
             />
-            <Text style={styles.hudLabel}>OMNISCAN · v2</Text>
+            <Text style={styles.hudLabel}>EVOSNAP</Text>
           </View>
           <View style={styles.topHudRightRow}>
             <Text style={styles.hudStatus} numberOfLines={1} ellipsizeMode="tail">
@@ -628,11 +628,11 @@ export default function ScannerScreen() {
           <View style={styles.settingsCard} testID="settings-sheet">
             <View style={styles.settingsHeader}>
               <Ionicons name="server-outline" size={16} color={theme.colors.primary} />
-              <Text style={styles.settingsTitle}>OMNISCAN SERVER</Text>
+              <Text style={styles.settingsTitle}>EVOSNAP SERVER</Text>
               <Text style={styles.settingsVersion}>APP v{APP_VERSION}</Text>
             </View>
             <Text style={styles.settingsHint}>
-              URL of the OmniScan backend this app connects to. http:// is added
+              URL of the EvoSnap backend this app connects to. http:// is added
               automatically if you leave it out.
             </Text>
             <TextInput
@@ -667,7 +667,7 @@ export default function ScannerScreen() {
             {serverStatus === 'fail' && (
               <Text style={styles.settingsHelp}>
                 Same Wi-Fi as the server? If the URL opens in your phone browser
-                but fails here, check phone settings → Apps → OmniScan → allow
+                but fails here, check phone settings → Apps → EvoSnap → allow
                 Wi-Fi / background data (common on Oppo, Realme, OnePlus, Vivo).
               </Text>
             )}

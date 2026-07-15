@@ -1,11 +1,14 @@
+import { useState } from 'react';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useFonts } from 'expo-font';
 import { Ionicons } from '@expo/vector-icons';
 import { View } from 'react-native';
+import EarthIntro from '../src/components/EarthIntro';
 
 export default function RootLayout() {
+  const [introDone, setIntroDone] = useState(false);
   const [loaded] = useFonts({
     ...Ionicons.font,
   });
@@ -24,6 +27,7 @@ export default function RootLayout() {
           animation: 'fade',
         }}
       />
+      {!introDone && <EarthIntro onDone={() => setIntroDone(true)} />}
     </SafeAreaProvider>
   );
 }
