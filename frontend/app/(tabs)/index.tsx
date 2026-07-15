@@ -280,7 +280,7 @@ export default function ScannerScreen() {
       if (/network request failed|failed to fetch|timed? ?out/i.test(msg)) {
         Alert.alert(
           'Cannot reach server',
-          `${msg}\n\nCheck that the OmniScan server is running and the URL in settings is correct.`,
+          `${msg}\n\nCheck that the EvoSnap server is running and the URL in settings is correct.`,
           [
             { text: 'Server settings', onPress: openSettings },
             { text: 'OK', style: 'cancel' },
