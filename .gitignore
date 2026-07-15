@@ -98,3 +98,5 @@ backend/data/
 
 # Emergent leftovers
 .em/
+
+cloudflared.exe
