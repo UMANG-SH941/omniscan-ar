@@ -189,7 +189,7 @@ async def generate_future(scan_id: str, req: FutureRequest):
 
     prompt = prompt_gen.build(doc, req.years)
     cached = (doc.get("future_images") or {}).get(str(req.years))
-    if cached:
+    if cached and not req.force:
         return FutureResponse(years=req.years, image_base64=cached,
                               prompt=prompt, provider="cache", cached=True)
 

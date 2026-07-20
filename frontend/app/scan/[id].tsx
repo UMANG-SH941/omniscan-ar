@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Animated, { FadeInDown, useAnimatedStyle, useSharedValue, withDelay, withTiming } from 'react-native-reanimated';
 import {
   View,
@@ -46,11 +46,86 @@ export default function ScanDetailScreen() {
   const [futureError, setFutureError] = useState<string | null>(null);
   const [cooldown, setCooldown] = useState(0); // seconds until GENERATE re-enabled
 
+  // Lifecycle slideshow: auto-generates missing stages, then loops the cycle.
+  const [lifecycle, setLifecycle] = useState<'idle' | 'preparing' | 'playing'>('idle');
+  const [prepMsg, setPrepMsg] = useState('');
+  const [slide, setSlide] = useState(0);
+  const lifecycleCancel = useRef(false);
+
   useEffect(() => {
     if (cooldown <= 0) return;
     const t = setTimeout(() => setCooldown((c) => c - 1), 1000);
     return () => clearTimeout(t);
   }, [cooldown]);
+
+  const slides = useMemo(() => {
+    if (!scan) return [] as { years: number; img: string; caption: string }[];
+    const arr = [{ years: 0, img: scan.image_base64, caption: 'The object as scanned today.' }];
+    for (const y of FUTURE_STAGES.slice(1)) {
+      const img = scan.future_images?.[String(y)];
+      if (img) {
+        const tl = scan.decomposition_timeline?.find((t) => t.years === String(y));
+        arr.push({ years: y, img, caption: tl?.state || `${y} years of environmental exposure.` });
+      }
+    }
+    return arr;
+  }, [scan]);
+
+  // Advance the slideshow while playing.
+  useEffect(() => {
+    if (lifecycle !== 'playing' || slides.length < 2) return;
+    const t = setInterval(() => setSlide((s) => (s + 1) % slides.length), 2400);
+    return () => clearInterval(t);
+  }, [lifecycle, slides.length]);
+
+  const stopLifecycle = () => {
+    lifecycleCancel.current = true;
+    setLifecycle('idle');
+    setSlide(0);
+  };
+
+  const playLifecycle = async () => {
+    if (!scan || lifecycle !== 'idle') return;
+    lifecycleCancel.current = false;
+    setFutureError(null);
+    const stages = FUTURE_STAGES.slice(1);
+    const have: Record<string, string> = { ...(scan.future_images || {}) };
+    const missing = stages.filter((y) => !have[String(y)]);
+    if (missing.length > 0) setLifecycle('preparing');
+
+    for (let i = 0; i < missing.length; i++) {
+      if (lifecycleCancel.current) return;
+      const y = missing[i];
+      setPrepMsg(`SIMULATING +${y}Y · ${i + 1}/${missing.length} · CAN TAKE A MINUTE EACH`);
+      let attempts = 0;
+      while (attempts < 2 && !lifecycleCancel.current) {
+        attempts += 1;
+        try {
+          const result = await generateFuture(scan.id, y);
+          have[String(y)] = result.image_base64;
+          setScan((prev) =>
+            prev
+              ? { ...prev, future_images: { ...(prev.future_images || {}), [String(y)]: result.image_base64 } }
+              : prev
+          );
+          break;
+        } catch (e: any) {
+          const msg = String(e?.message || e);
+          if (attempts < 2 && /rate.?limit|429|quota/i.test(msg)) {
+            setPrepMsg(`RATE LIMITED · WAITING 40s BEFORE RETRYING +${y}Y...`);
+            await new Promise((r) => setTimeout(r, 40000));
+          } else {
+            setPrepMsg(`+${y}Y FAILED · SKIPPING`);
+            await new Promise((r) => setTimeout(r, 1200));
+            break;
+          }
+        }
+      }
+    }
+    if (lifecycleCancel.current) return;
+    setSlide(0);
+    setLifecycle('playing');
+  };
   const chatRef = useRef<ScrollView | null>(null);
 
   useEffect(() => {
@@ -466,6 +541,64 @@ export default function ScanDetailScreen() {
 
         {tab === 'future' && (
           <View style={styles.sectionWrap}>
+            {/* One-tap lifecycle: generate all stages, then play the cycle */}
+            {lifecycle === 'idle' ? (
+              <TouchableOpacity
+                style={styles.lifecycleBtn}
+                onPress={playLifecycle}
+                testID="play-lifecycle-btn">
+                <Ionicons name="play" size={15} color={theme.colors.bg} />
+                <Text style={styles.lifecycleBtnText}>PLAY FULL LIFECYCLE</Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.lifecyclePanel} testID="lifecycle-panel">
+                <View style={styles.lifecycleViewport}>
+                  {slides.length > 0 && (
+                    <Image
+                      source={{ uri: `data:image/jpeg;base64,${slides[Math.min(slide, slides.length - 1)].img}` }}
+                      style={StyleSheet.absoluteFillObject}
+                      resizeMode="cover"
+                    />
+                  )}
+                  <View style={styles.lifecycleCaptionWrap}>
+                    <Text style={styles.lifecycleYear}>
+                      {slides[Math.min(slide, slides.length - 1)]?.years === 0
+                        ? 'NOW'
+                        : `+${slides[Math.min(slide, slides.length - 1)]?.years} YEARS`}
+                    </Text>
+                    <Text style={styles.lifecycleCaption} numberOfLines={2}>
+                      {slides[Math.min(slide, slides.length - 1)]?.caption}
+                    </Text>
+                  </View>
+                  {lifecycle === 'preparing' && (
+                    <View style={styles.lifecyclePrep}>
+                      <ActivityIndicator color={theme.colors.secondary} size="small" />
+                      <Text style={styles.lifecyclePrepText}>{prepMsg}</Text>
+                    </View>
+                  )}
+                </View>
+                <View style={styles.lifecycleControls}>
+                  <View style={styles.lifecycleDots}>
+                    {slides.map((s, i) => (
+                      <View
+                        key={s.years}
+                        style={[
+                          styles.lifecycleDot,
+                          i === Math.min(slide, slides.length - 1) && {
+                            backgroundColor: theme.colors.secondary,
+                          },
+                        ]}
+                      />
+                    ))}
+                  </View>
+                  <TouchableOpacity onPress={stopLifecycle} style={styles.lifecycleStop} testID="stop-lifecycle-btn">
+                    <Ionicons name="stop" size={12} color={theme.colors.warning} />
+                    <Text style={styles.lifecycleStopText}>STOP</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
             {/* Stage selector */}
             <ScrollView
               horizontal
@@ -524,6 +657,38 @@ export default function ScanDetailScreen() {
                       +{futureYears} YEARS
                     </Text>
                   </View>
+                  <TouchableOpacity
+                    style={styles.regenBtn}
+                    disabled={generating || cooldown > 0}
+                    onPress={async () => {
+                      if (!scan) return;
+                      setGenerating(true);
+                      setFutureError(null);
+                      try {
+                        const r = await generateFuture(scan.id, futureYears, true);
+                        setScan((prev) =>
+                          prev
+                            ? { ...prev, future_images: { ...(prev.future_images || {}), [String(futureYears)]: r.image_base64 } }
+                            : prev
+                        );
+                      } catch (e: any) {
+                        const msg = String(e?.message || e);
+                        setFutureError(msg);
+                        if (/rate.?limit|429|quota/i.test(msg)) setCooldown(60);
+                      } finally {
+                        setGenerating(false);
+                      }
+                    }}
+                    testID="regenerate-future-btn">
+                    {generating ? (
+                      <ActivityIndicator size="small" color={theme.colors.secondary} />
+                    ) : (
+                      <>
+                        <Ionicons name="refresh" size={11} color={theme.colors.secondary} />
+                        <Text style={styles.regenText}>{cooldown > 0 ? `${cooldown}s` : 'REDO'}</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
                 </View>
               </Animated.View>
             ) : (
@@ -1027,6 +1192,130 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.6)',
   },
   compareBadgeText: { fontFamily: mono, fontSize: 10, letterSpacing: 2, fontWeight: '800' },
+  regenBtn: {
+    marginTop: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.colors.secondaryDim,
+  },
+  regenText: {
+    color: theme.colors.secondary,
+    fontFamily: mono,
+    fontSize: 9,
+    letterSpacing: 1.5,
+    fontWeight: '700',
+    marginLeft: 4,
+  },
+
+  lifecycleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: theme.colors.secondary,
+    borderRadius: 999,
+    paddingVertical: 13,
+    marginBottom: 14,
+    shadowColor: theme.colors.secondary,
+    shadowOpacity: 0.6,
+    shadowRadius: 12,
+  },
+  lifecycleBtnText: {
+    color: theme.colors.bg,
+    fontFamily: mono,
+    fontSize: 12,
+    letterSpacing: 3,
+    fontWeight: '800',
+    marginLeft: 8,
+  },
+  lifecyclePanel: { marginBottom: 14 },
+  lifecycleViewport: {
+    width: SCREEN_W - 40,
+    height: (SCREEN_W - 40) * 1.0,
+    borderRadius: 16,
+    overflow: 'hidden',
+    backgroundColor: '#000',
+    borderWidth: 1,
+    borderColor: theme.colors.secondaryDim,
+  },
+  lifecycleCaptionWrap: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    padding: 14,
+    backgroundColor: 'rgba(0,6,10,0.72)',
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.secondaryDim,
+  },
+  lifecycleYear: {
+    color: theme.colors.secondary,
+    fontFamily: mono,
+    fontSize: 13,
+    letterSpacing: 3,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  lifecycleCaption: { color: theme.colors.text, fontSize: 13, lineHeight: 18 },
+  lifecyclePrep: {
+    position: 'absolute',
+    top: 12,
+    left: 12,
+    right: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(0,6,10,0.8)',
+    borderRadius: 10,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  lifecyclePrepText: {
+    color: theme.colors.secondary,
+    fontFamily: mono,
+    fontSize: 9,
+    letterSpacing: 1,
+    flex: 1,
+    marginLeft: 8,
+  },
+  lifecycleControls: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 10,
+  },
+  lifecycleDots: { flexDirection: 'row', gap: 6, alignItems: 'center' },
+  lifecycleDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    marginRight: 6,
+  },
+  lifecycleStop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(255,59,48,0.4)',
+  },
+  lifecycleStopText: {
+    color: theme.colors.warning,
+    fontFamily: mono,
+    fontSize: 10,
+    letterSpacing: 2,
+    fontWeight: '800',
+    marginLeft: 5,
+  },
   stageRow: { gap: 8, paddingBottom: 14 },
   stageChip: {
     flexDirection: 'row',

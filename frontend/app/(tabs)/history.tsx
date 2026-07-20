@@ -15,7 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { theme, CATEGORIES } from '../../src/theme';
-import { listScans, Scan } from '../../src/api';
+import { listScans, lastListWasOffline, Scan } from '../../src/api';
 
 export default function HistoryScreen() {
   return <HistoryView favoritesOnly={false} title="SCAN LOG" />;
@@ -33,11 +33,13 @@ export function HistoryView({
   const [scans, setScans] = useState<Scan[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [offline, setOffline] = useState(false);
 
   const load = useCallback(async () => {
     try {
       const data = await listScans(category, favoritesOnly);
       setScans(data);
+      setOffline(lastListWasOffline);
     } catch (e) {
       console.log('listScans error', e);
     } finally {
@@ -101,6 +103,15 @@ export function HistoryView({
           <Text style={styles.countText}>{scans.length} ENTRIES</Text>
         </View>
       </View>
+
+      {offline && (
+        <View style={styles.offlineBanner} testID="offline-banner">
+          <Ionicons name="cloud-offline-outline" size={13} color="#FFD60A" />
+          <Text style={styles.offlineText}>
+            SERVER OFFLINE · SHOWING SCANS SAVED ON THIS PHONE
+          </Text>
+        </View>
+      )}
 
       <ScrollView
         horizontal
@@ -181,6 +192,28 @@ export function HistoryView({
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: theme.colors.bg },
+  offlineBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 20,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: 'rgba(255,214,10,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,214,10,0.35)',
+  },
+  offlineText: {
+    color: '#FFD60A',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+    fontSize: 9,
+    letterSpacing: 1.5,
+    fontWeight: '700',
+    marginLeft: 8,
+    flex: 1,
+  },
   header: {
     paddingHorizontal: 20,
     paddingTop: 10,

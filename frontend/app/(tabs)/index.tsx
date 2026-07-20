@@ -36,6 +36,21 @@ import { scanImage, detectObjects } from '../../src/api';
 import { Track, updateTracks, mapBoxToScreen } from '../../src/tracking';
 import Constants from 'expo-constants';
 import { getBackendUrl, setBackendUrl, defaultBackendUrl, pingBackend } from '../../src/config';
+import { listLocalScans } from '../../src/localStore';
+
+type KnownObject = { name: string; material: string; score: number };
+
+/** Fuzzy-match a live detection label against previously scanned objects. */
+function matchKnown(label: string, known: KnownObject[]): KnownObject | null {
+  const l = label.toLowerCase();
+  const words = l.split(/\s+/).filter((w) => w.length > 3);
+  for (const k of known) {
+    const n = k.name.toLowerCase();
+    if (n.includes(l) || l.includes(n)) return k;
+    if (words.some((w) => n.includes(w))) return k;
+  }
+  return null;
+}
 
 const APP_VERSION = Constants.expoConfig?.version ?? '?';
 
@@ -69,6 +84,7 @@ export default function ScannerScreen() {
   const [liveMode, setLiveMode] = useState(Platform.OS !== 'web');
   const [tracks, setTracks] = useState<Track[]>([]);
   const [selectedTrackId, setSelectedTrackId] = useState<number | null>(null);
+  const [knownObjects, setKnownObjects] = useState<KnownObject[]>([]);
   const [frameDims, setFrameDims] = useState({ w: LIVE_FRAME_WIDTH, h: LIVE_FRAME_WIDTH });
   const tracksRef = useRef<Track[]>([]);
   const busyRef = useRef(false);
@@ -145,6 +161,18 @@ export default function ScannerScreen() {
   useFocusEffect(
     useCallback(() => {
       focusedRef.current = true;
+      // Load the offline vault so live AR can show details of known objects.
+      listLocalScans().then((scans) =>
+        setKnownObjects(
+          scans
+            .filter((s) => s.name && s.name !== 'Unknown Object')
+            .map((s) => ({
+              name: s.name,
+              material: s.material || s.ml_material || '',
+              score: s.sustainability_score ?? -1,
+            }))
+        )
+      );
       cornerOpacity.value = withTiming(1, { duration: 600 });
       pulse.value = withRepeat(
         withSequence(
@@ -433,6 +461,7 @@ export default function ScannerScreen() {
           const r = mapBoxToScreen(t, frameDims.w, frameDims.h, SCREEN_W, SCREEN_H);
           if (r.w < 8 || r.h < 8) return null;
           const selected = selectedTrackId === t.id;
+          const known = matchKnown(t.label, knownObjects);
           return (
             <Animated.View
               key={t.id}
@@ -464,6 +493,36 @@ export default function ScannerScreen() {
                 </Text>
                 <Text style={styles.arLabelConf}>{Math.round(t.confidence * 100)}%</Text>
               </View>
+              {/* real-time details for objects already in the scan vault */}
+              {known && (
+                <View style={styles.arKnownRow} pointerEvents="none">
+                  {!!known.material && (
+                    <View style={styles.arKnownChip}>
+                      <Text style={styles.arKnownText} numberOfLines={1}>
+                        {known.material.toUpperCase().slice(0, 18)}
+                      </Text>
+                    </View>
+                  )}
+                  {known.score >= 0 && (
+                    <View
+                      style={[
+                        styles.arKnownChip,
+                        {
+                          borderColor:
+                            known.score >= 60 ? theme.colors.primaryDim : 'rgba(255,214,10,0.4)',
+                        },
+                      ]}>
+                      <Text
+                        style={[
+                          styles.arKnownText,
+                          { color: known.score >= 60 ? theme.colors.primary : '#FFD60A' },
+                        ]}>
+                        ECO {known.score}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
               {/* confidence bar */}
               <View style={styles.arConfTrack} pointerEvents="none">
                 <View
@@ -513,6 +572,40 @@ export default function ScannerScreen() {
                   <Text style={styles.arPopupKey}>TRACK ID</Text>
                   <Text style={styles.arPopupVal}>#{String(t.id).padStart(3, '0')} · {t.age} FRAMES</Text>
                 </View>
+                {(() => {
+                  const known = matchKnown(t.label, knownObjects);
+                  if (!known) return null;
+                  return (
+                    <>
+                      {!!known.material && (
+                        <View style={styles.arPopupRow}>
+                          <Text style={styles.arPopupKey}>MATERIAL</Text>
+                          <Text style={styles.arPopupVal} numberOfLines={1}>
+                            {known.material.toUpperCase().slice(0, 22)}
+                          </Text>
+                        </View>
+                      )}
+                      {known.score >= 0 && (
+                        <View style={styles.arPopupRow}>
+                          <Text style={styles.arPopupKey}>ECO SCORE</Text>
+                          <View style={styles.arPopupMeter}>
+                            <View
+                              style={[
+                                styles.arPopupMeterFill,
+                                {
+                                  width: `${known.score}%`,
+                                  backgroundColor:
+                                    known.score >= 60 ? theme.colors.primary : '#FFD60A',
+                                },
+                              ]}
+                            />
+                          </View>
+                          <Text style={styles.arPopupVal}>{known.score}</Text>
+                        </View>
+                      )}
+                    </>
+                  );
+                })()}
                 <TouchableOpacity
                   style={styles.arPopupBtn}
                   onPress={() => {
@@ -875,6 +968,30 @@ const styles = StyleSheet.create({
     height: 2,
     backgroundColor: theme.colors.secondary,
     borderRadius: 1,
+  },
+
+  arKnownRow: {
+    position: 'absolute',
+    bottom: -34,
+    left: 0,
+    flexDirection: 'row',
+    gap: 6,
+  },
+  arKnownChip: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: 'rgba(0,10,14,0.8)',
+    borderWidth: 1,
+    borderColor: 'rgba(0,229,255,0.4)',
+    marginRight: 6,
+  },
+  arKnownText: {
+    color: theme.colors.secondary,
+    fontFamily: mono,
+    fontSize: 8.5,
+    letterSpacing: 1,
+    fontWeight: '700',
   },
 
   // AR detail popup

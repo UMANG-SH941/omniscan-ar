@@ -94,6 +94,7 @@ class ChatRequest(BaseModel):
 
 class FutureRequest(BaseModel):
     years: int  # one of 10, 25, 50, 100, 250, 500
+    force: bool = False  # regenerate even if a cached image exists
 
 
 class FutureResponse(BaseModel):
