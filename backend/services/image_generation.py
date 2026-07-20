@@ -10,6 +10,7 @@ Providers are tried in priority order; each is independently replaceable.
   editing, so geometry/perspective survive. Needs GEMINI_API_KEY.
 - OpenAIImageProvider — optional paid fallback (gpt-image-1). Needs OPENAI_API_KEY.
 """
+import asyncio
 import logging
 import os
 from typing import List, Optional
@@ -214,4 +215,19 @@ class ImageGenerationService:
             except ImageGenError as e:
                 logger.warning("Provider %s failed: %s", provider.name, e)
                 last_err = e
+                # Gemini is the only provider that sees the reference photo
+                # (image-to-image). When it is merely rate-limited, waiting out
+                # the per-minute window beats falling back to text-to-image,
+                # which invents a different scene.
+                if (provider.name == "gemini-image" and reference_b64
+                        and "rate-limited" in str(e)):
+                    logger.info("Waiting 30s to retry Gemini img2img before "
+                                "text-only fallback")
+                    await asyncio.sleep(30)
+                    try:
+                        img = await provider.generate(prompt, reference_b64)
+                        return img, provider.name
+                    except ImageGenError as e2:
+                        logger.warning("Gemini retry failed: %s", e2)
+                        last_err = e2
         raise ImageGenError(f"All image providers failed. Last error: {last_err}")

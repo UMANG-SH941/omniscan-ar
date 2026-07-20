@@ -92,6 +92,7 @@ export default function ScannerScreen() {
       base64: false,
       quality: 0.3,
       skipProcessing: true,
+      shutterSound: false, // live loop captures ~1/s — must be silent
     });
     if (!photo?.uri) return null;
     const small = await ImageManipulator.manipulateAsync(
@@ -245,6 +246,7 @@ export default function ScannerScreen() {
         base64: false,
         quality: 0.7,
         skipProcessing: false,
+        shutterSound: false, // haptics already confirm the capture
       });
       if (!photo?.uri) {
         setBusy(false);

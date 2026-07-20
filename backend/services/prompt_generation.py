@@ -63,13 +63,17 @@ class PromptGenerationService:
         name = scan.get("name") or "object"
         material = " ".join(
             [scan.get("material") or ""] + (scan.get("materials") or []))
+        description = (scan.get("description") or "")[:220]
         cues = _cues_for(f"{material} {scan.get('category', '')} {name}")
         return (
-            f"Photorealistic photograph of the exact same {name} from the reference "
-            f"image after {years} years abandoned outdoors, showing "
-            f"{_intensity(years)} {cues}. "
-            "CRITICAL: preserve the original object's shape, geometry, scale, "
-            "camera angle, framing, background and lighting exactly as in the "
-            "reference image — only age the object itself. "
-            "Documentary style, realistic textures, no text, no watermarks."
+            f"Edit the provided reference photo. Keep the IDENTICAL scene: same "
+            f"camera angle, same framing, same background, same surface it rests "
+            f"on, same lighting, same object position and scale. "
+            f"Change ONLY the surface condition of the {name} "
+            f"({material.strip() or 'unknown material'}) to show how it looks "
+            f"after {years} years abandoned in place: {_intensity(years)} {cues}. "
+            f"The object must stay unmistakably recognizable as the same item"
+            + (f" ({description})" if description else "") + ". "
+            "Photorealistic documentary photo, realistic textures, "
+            "no text, no watermarks."
         )
