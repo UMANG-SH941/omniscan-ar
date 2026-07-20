@@ -332,13 +332,23 @@ export default function ScanDetailScreen() {
                     ON-DEVICE MODEL · SECOND OPINION
                   </Text>
                 </View>
-                <Text style={styles.mlText}>
-                  Our self-trained MobileNetV3 classifier (TrashNet) reads this as{' '}
-                  <Text style={{ color: theme.colors.secondary, fontWeight: '800' }}>
-                    {scan.ml_material.toUpperCase()}
-                  </Text>{' '}
-                  with {Math.round(scan.ml_confidence * 100)}% confidence.
-                </Text>
+                {scan.ml_confidence >= 0.7 ? (
+                  <Text style={styles.mlText}>
+                    Our self-trained MobileNetV3 classifier (TrashNet) reads this as{' '}
+                    <Text style={{ color: theme.colors.secondary, fontWeight: '800' }}>
+                      {scan.ml_material.toUpperCase()}
+                    </Text>{' '}
+                    with {Math.round(scan.ml_confidence * 100)}% confidence.
+                  </Text>
+                ) : (
+                  <Text style={styles.mlText}>
+                    Our self-trained classifier is{' '}
+                    <Text style={{ color: '#FFD60A', fontWeight: '800' }}>UNCERTAIN</Text> — it
+                    leans {scan.ml_material.toUpperCase()} ({Math.round(scan.ml_confidence * 100)}%),
+                    but this object is likely outside its 6 trained waste
+                    categories (cardboard, glass, metal, paper, plastic, trash).
+                  </Text>
+                )}
               </Animated.View>
             ) : null}
             <SectionCard title="DESCRIPTION" body={scan.description} />
