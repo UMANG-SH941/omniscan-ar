@@ -11,10 +11,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 const KEY = 'omniscan.backend_url';
 const DEFAULT_URL = process.env.EXPO_PUBLIC_BACKEND_URL || '';
 
-/** Trim, drop trailing slashes, and default to http:// when no scheme given —
- * browsers forgive a missing scheme but fetch() does not. */
+/** Trim, drop trailing slashes and accidentally-pasted API paths, and default
+ * to http:// when no scheme given — browsers forgive these, fetch() does not. */
 export function normalizeUrl(url: string): string {
   let clean = url.trim().replace(/\/+$/, '');
+  // Users often paste a full endpoint like .../api/health — keep just the host.
+  clean = clean.replace(/\/api(\/[a-z0-9/_-]*)?$/i, '');
   if (clean && !/^https?:\/\//i.test(clean)) {
     clean = `http://${clean}`;
   }
