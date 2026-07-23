@@ -61,6 +61,8 @@ class Scan(BaseModel):
     image_base64: str = ""
     # future simulation images keyed by years-in-the-future ("10", "100", ...)
     future_images: Dict[str, str] = {}
+    # which provider produced each cached future image (for the precise flag)
+    future_image_providers: Dict[str, str] = {}
 
     favorite: bool = False
     chat_history: List[ChatTurn] = []
@@ -103,6 +105,9 @@ class FutureResponse(BaseModel):
     prompt: str
     provider: str
     cached: bool = False
+    # False when the provider could not see the original photo (text-to-image
+    # fallback), so the background/scene may not match the reference.
+    precise: bool = True
 
 
 class HealthResponse(BaseModel):

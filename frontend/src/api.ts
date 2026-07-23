@@ -40,6 +40,7 @@ export type Scan = {
   ml_confidence: number; // 0-1 from our trained classifier, -1 = unavailable
   image_base64: string;
   future_images: Record<string, string>;
+  future_image_providers: Record<string, string>;
   favorite: boolean;
   chat_history: ChatTurn[];
   created_at: string;
@@ -58,6 +59,7 @@ export type FutureResult = {
   prompt: string;
   provider: string;
   cached: boolean;
+  precise: boolean; // false = text-to-image fallback; background may not match
 };
 
 async function handle<T>(res: Response): Promise<T> {
@@ -172,6 +174,10 @@ export async function generateFuture(
   if (local) {
     updateLocalScan(id, {
       future_images: { ...(local.future_images || {}), [String(years)]: result.image_base64 },
+      future_image_providers: {
+        ...(local.future_image_providers || {}),
+        [String(years)]: result.provider,
+      },
     });
   }
   return result;

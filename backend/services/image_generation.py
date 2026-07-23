@@ -198,6 +198,10 @@ class ImageGenerationService:
             "providers": self.available_providers(),
         }
 
+    # Providers that actually see the reference photo (img2img). Anything
+    # else invents a new scene, so callers/UI should flag those results.
+    IMG2IMG_PROVIDERS = {"stable-diffusion", "gemini-image"}
+
     async def generate(self, prompt: str,
                        reference_b64: Optional[str] = None) -> tuple[str, str]:
         """Try providers in order. Returns (image_b64, provider_name)."""
@@ -215,19 +219,20 @@ class ImageGenerationService:
             except ImageGenError as e:
                 logger.warning("Provider %s failed: %s", provider.name, e)
                 last_err = e
-                # Gemini is the only provider that sees the reference photo
-                # (image-to-image). When it is merely rate-limited, waiting out
-                # the per-minute window beats falling back to text-to-image,
-                # which invents a different scene.
+                # Gemini is the only free-tier provider that sees the
+                # reference photo (image-to-image). When it is merely
+                # rate-limited, retrying with backoff beats immediately
+                # falling back to text-to-image, which invents a new scene.
                 if (provider.name == "gemini-image" and reference_b64
                         and "rate-limited" in str(e)):
-                    logger.info("Waiting 30s to retry Gemini img2img before "
-                                "text-only fallback")
-                    await asyncio.sleep(30)
-                    try:
-                        img = await provider.generate(prompt, reference_b64)
-                        return img, provider.name
-                    except ImageGenError as e2:
-                        logger.warning("Gemini retry failed: %s", e2)
-                        last_err = e2
+                    for wait_s in (25, 45):
+                        logger.info("Waiting %ss to retry Gemini img2img "
+                                    "before falling back", wait_s)
+                        await asyncio.sleep(wait_s)
+                        try:
+                            img = await provider.generate(prompt, reference_b64)
+                            return img, provider.name
+                        except ImageGenError as e2:
+                            logger.warning("Gemini retry failed: %s", e2)
+                            last_err = e2
         raise ImageGenError(f"All image providers failed. Last error: {last_err}")

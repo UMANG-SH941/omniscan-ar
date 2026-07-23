@@ -190,8 +190,11 @@ async def generate_future(scan_id: str, req: FutureRequest):
     prompt = prompt_gen.build(doc, req.years)
     cached = (doc.get("future_images") or {}).get(str(req.years))
     if cached and not req.force:
-        return FutureResponse(years=req.years, image_base64=cached,
-                              prompt=prompt, provider="cache", cached=True)
+        cached_provider = (doc.get("future_image_providers") or {}).get(str(req.years), "")
+        return FutureResponse(
+            years=req.years, image_base64=cached, prompt=prompt,
+            provider="cache", cached=True,
+            precise=cached_provider in ImageGenerationService.IMG2IMG_PROVIDERS)
 
     try:
         image_b64, provider = await image_gen.generate(
@@ -203,9 +206,13 @@ async def generate_future(scan_id: str, req: FutureRequest):
 
     futures = doc.get("future_images") or {}
     futures[str(req.years)] = image_b64
-    await repo.update(scan_id, {"future_images": futures})
+    providers = doc.get("future_image_providers") or {}
+    providers[str(req.years)] = provider
+    await repo.update(scan_id, {"future_images": futures,
+                                "future_image_providers": providers})
+    precise = provider in ImageGenerationService.IMG2IMG_PROVIDERS
     return FutureResponse(years=req.years, image_base64=image_b64,
-                          prompt=prompt, provider=provider)
+                          prompt=prompt, provider=provider, precise=precise)
 
 
 app.include_router(api_router)

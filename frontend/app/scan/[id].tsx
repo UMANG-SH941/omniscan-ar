@@ -32,6 +32,10 @@ const { width: SCREEN_W } = Dimensions.get('window');
 
 type TabKey = 'overview' | 'impact' | 'future' | 'chat';
 
+// Only these providers actually see the reference photo (image-to-image);
+// anything else invented a new scene from the prompt alone.
+const PRECISE_PROVIDERS = new Set(['stable-diffusion', 'gemini-image']);
+
 export default function ScanDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
@@ -59,13 +63,21 @@ export default function ScanDetailScreen() {
   }, [cooldown]);
 
   const slides = useMemo(() => {
-    if (!scan) return [] as { years: number; img: string; caption: string }[];
-    const arr = [{ years: 0, img: scan.image_base64, caption: 'The object as scanned today.' }];
+    if (!scan) return [] as { years: number; img: string; caption: string; approx: boolean }[];
+    const arr = [
+      { years: 0, img: scan.image_base64, caption: 'The object as scanned today.', approx: false },
+    ];
     for (const y of FUTURE_STAGES.slice(1)) {
       const img = scan.future_images?.[String(y)];
       if (img) {
         const tl = scan.decomposition_timeline?.find((t) => t.years === String(y));
-        arr.push({ years: y, img, caption: tl?.state || `${y} years of environmental exposure.` });
+        const provider = scan.future_image_providers?.[String(y)];
+        arr.push({
+          years: y,
+          img,
+          caption: tl?.state || `${y} years of environmental exposure.`,
+          approx: !!provider && !PRECISE_PROVIDERS.has(provider),
+        });
       }
     }
     return arr;
@@ -105,9 +117,24 @@ export default function ScanDetailScreen() {
           have[String(y)] = result.image_base64;
           setScan((prev) =>
             prev
-              ? { ...prev, future_images: { ...(prev.future_images || {}), [String(y)]: result.image_base64 } }
+              ? {
+                  ...prev,
+                  future_images: { ...(prev.future_images || {}), [String(y)]: result.image_base64 },
+                  future_image_providers: {
+                    ...(prev.future_image_providers || {}),
+                    [String(y)]: result.provider,
+                  },
+                }
               : prev
           );
+          // An imprecise (fallback) result is technically a success, but if
+          // we still have a retry budget, one more attempt after the image
+          // model's rate-limit window is likely to land the real scene.
+          if (!result.precise && attempts < 2) {
+            setPrepMsg(`+${y}Y CAME OUT APPROXIMATE · RETRYING FOR ACCURACY...`);
+            await new Promise((r) => setTimeout(r, 40000));
+            continue;
+          }
           break;
         } catch (e: any) {
           const msg = String(e?.message || e);
@@ -228,9 +255,18 @@ export default function ScanDetailScreen() {
                 ...(prev.future_images || {}),
                 [String(years)]: result.image_base64,
               },
+              future_image_providers: {
+                ...(prev.future_image_providers || {}),
+                [String(years)]: result.provider,
+              },
             }
           : prev
       );
+      if (!result.precise) {
+        setFutureError(
+          'Generated, but the AI image model was rate-limited so this used a text-only fallback — the scene may not match. Tap REDO in a minute for the precise version.'
+        );
+      }
     } catch (e: any) {
       const msg = String(e?.message || e);
       setFutureError(msg);
@@ -275,6 +311,11 @@ export default function ScanDetailScreen() {
     futureYears === 0
       ? scan.image_base64
       : scan.future_images?.[String(futureYears)] || null;
+
+  const isFuturePrecise = (years: number) => {
+    const provider = scan.future_image_providers?.[String(years)];
+    return !provider || PRECISE_PROVIDERS.has(provider);
+  };
 
   const tabs: { key: TabKey; label: string }[] = [
     { key: 'overview', label: 'OVERVIEW' },
@@ -561,11 +602,19 @@ export default function ScanDetailScreen() {
                     />
                   )}
                   <View style={styles.lifecycleCaptionWrap}>
-                    <Text style={styles.lifecycleYear}>
-                      {slides[Math.min(slide, slides.length - 1)]?.years === 0
-                        ? 'NOW'
-                        : `+${slides[Math.min(slide, slides.length - 1)]?.years} YEARS`}
-                    </Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                      <Text style={styles.lifecycleYear}>
+                        {slides[Math.min(slide, slides.length - 1)]?.years === 0
+                          ? 'NOW'
+                          : `+${slides[Math.min(slide, slides.length - 1)]?.years} YEARS`}
+                      </Text>
+                      {slides[Math.min(slide, slides.length - 1)]?.approx && (
+                        <View style={styles.approxBadge}>
+                          <Ionicons name="alert-circle-outline" size={10} color="#FFD60A" />
+                          <Text style={styles.approxBadgeText}>APPROXIMATE</Text>
+                        </View>
+                      )}
+                    </View>
                     <Text style={styles.lifecycleCaption} numberOfLines={2}>
                       {slides[Math.min(slide, slides.length - 1)]?.caption}
                     </Text>
@@ -657,6 +706,12 @@ export default function ScanDetailScreen() {
                       +{futureYears} YEARS
                     </Text>
                   </View>
+                  {!isFuturePrecise(futureYears) && (
+                    <View style={styles.approxBadge} testID="approx-badge">
+                      <Ionicons name="alert-circle-outline" size={11} color="#FFD60A" />
+                      <Text style={styles.approxBadgeText}>APPROXIMATE · SCENE MAY DIFFER</Text>
+                    </View>
+                  )}
                   <TouchableOpacity
                     style={styles.regenBtn}
                     disabled={generating || cooldown > 0}
@@ -668,9 +723,21 @@ export default function ScanDetailScreen() {
                         const r = await generateFuture(scan.id, futureYears, true);
                         setScan((prev) =>
                           prev
-                            ? { ...prev, future_images: { ...(prev.future_images || {}), [String(futureYears)]: r.image_base64 } }
+                            ? {
+                                ...prev,
+                                future_images: { ...(prev.future_images || {}), [String(futureYears)]: r.image_base64 },
+                                future_image_providers: {
+                                  ...(prev.future_image_providers || {}),
+                                  [String(futureYears)]: r.provider,
+                                },
+                              }
                             : prev
                         );
+                        if (!r.precise) {
+                          setFutureError(
+                            'Generated, but the AI image model was rate-limited so this used a text-only fallback — the scene may not match. Tap REDO again in a minute for the precise version.'
+                          );
+                        }
                       } catch (e: any) {
                         const msg = String(e?.message || e);
                         setFutureError(msg);
@@ -1192,6 +1259,28 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.6)',
   },
   compareBadgeText: { fontFamily: mono, fontSize: 10, letterSpacing: 2, fontWeight: '800' },
+  approxBadge: {
+    marginTop: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,214,10,0.1)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,214,10,0.4)',
+    maxWidth: 150,
+  },
+  approxBadgeText: {
+    color: '#FFD60A',
+    fontFamily: mono,
+    fontSize: 7.5,
+    letterSpacing: 0.5,
+    fontWeight: '700',
+    marginLeft: 4,
+    flexShrink: 1,
+  },
   regenBtn: {
     marginTop: 8,
     flexDirection: 'row',
