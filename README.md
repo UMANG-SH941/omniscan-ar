@@ -5,7 +5,7 @@
 An AI-powered AR scanner that detects objects in real time, understands them with
 vision-language models, reasons about their environmental impact, and simulates
 how they will degrade over the next 10–500 years — all overlaid on the camera
-view as a holographic HUD.
+view as a holographic HUD..
 
 ## Features
 
